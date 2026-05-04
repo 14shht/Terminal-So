@@ -17,7 +17,6 @@ export type AppRole = "student" | "admin";
 
 export type AppUser = {
   username: string;
-  name: string;
   role: AppRole;
 };
 

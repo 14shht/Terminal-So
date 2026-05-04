@@ -20,7 +20,6 @@ export async function POST(request: Request) {
 
   const sessionUser = {
     username: user.username,
-    name: user.name,
     role: user.role,
   } as const;
 

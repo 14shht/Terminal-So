@@ -5,7 +5,6 @@ export type AppRole = "student" | "admin";
 
 export type SessionUser = {
   username: string;
-  name: string;
   role: AppRole;
 };
 
@@ -51,7 +50,7 @@ export const verifySessionToken = async (token: string): Promise<SessionUser | n
     const key = getSecretKey();
     const verified = await jwtVerify(token, key);
     const payload = verified.payload as SessionUser;
-    if (!payload?.username || !payload?.name || !payload?.role) {
+    if (!payload?.username || !payload?.role) {
       return null;
     }
     return payload;

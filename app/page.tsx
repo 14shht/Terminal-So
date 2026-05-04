@@ -1,54 +1,23 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { EditorModal } from "@/components/EditorModal";
 import { HelpPanel } from "@/components/HelpPanel";
 import { Terminal } from "@/components/Terminal";
 import { AppUser, FileSystemItem, TerminalEntry } from "@/lib/types";
+import { gsap } from "gsap";
 
 const HOME_DIR = "/home/student";
 const DEFAULT_FOLDERS = [HOME_DIR];
 
-const DEFAULT_FILES: FileSystemItem[] = [
-  {
-    name: `${HOME_DIR}/main.c`,
-    type: "file",
-    executable: false,
-    content: `#include <stdio.h>
-
-int main() {
-  printf("Halo Dunia\\n");
-  return 0;
-}`,
-  },
-  {
-    name: `${HOME_DIR}/segitiga.c`,
-    type: "file",
-    executable: false,
-    content: `#include <stdio.h>
-
-int main() {
-  float alas = 10, tinggi = 6;
-  float luas = 0.5 * alas * tinggi;
-  printf("Luas segitiga adalah %.2f\\n", luas);
-  return 0;
-}`,
-  },
-  {
-    name: `${HOME_DIR}/latihan.sh`,
-    type: "file",
-    executable: false,
-    content: `#!/bin/bash
-echo "Halo dari script latihan"
-echo "Belajar Bash di Ujian Praktikum Sistem Operasi"`,
-  },
-];
+const DEFAULT_FILES: FileSystemItem[] = [];
 
 type PersistedState = {
   currentDir: string;
   folders: string[];
   files: FileSystemItem[];
+  entries: TerminalEntry[];
   submitted: boolean;
 };
 
@@ -121,12 +90,24 @@ const getStorageKey = (username: string) => `ubuntu-web-lab-state-${username}`;
 
 const getInitialState = (username: string): PersistedState => {
   if (typeof window === "undefined") {
-    return { currentDir: HOME_DIR, folders: DEFAULT_FOLDERS, files: DEFAULT_FILES, submitted: false };
+    return {
+      currentDir: HOME_DIR,
+      folders: DEFAULT_FOLDERS,
+      files: DEFAULT_FILES,
+      entries: [],
+      submitted: false,
+    };
   }
 
   const raw = window.localStorage.getItem(getStorageKey(username));
   if (!raw) {
-    return { currentDir: HOME_DIR, folders: DEFAULT_FOLDERS, files: DEFAULT_FILES, submitted: false };
+    return {
+      currentDir: HOME_DIR,
+      folders: DEFAULT_FOLDERS,
+      files: DEFAULT_FILES,
+      entries: [],
+      submitted: false,
+    };
   }
 
   try {
@@ -143,16 +124,39 @@ const getInitialState = (username: string): PersistedState => {
           .map((item) => ({ ...item, name: normalizePath(item.name) }))
           .filter((item) => isInsideHome(item.name))
       : DEFAULT_FILES;
+    const entries = Array.isArray(parsed.entries)
+      ? parsed.entries
+          .filter(
+            (item) =>
+              typeof item?.id === "string" &&
+              typeof item?.prompt === "string" &&
+              typeof item?.command === "string" &&
+              Array.isArray(item?.output),
+          )
+          .map((item) => ({
+            id: item.id,
+            prompt: item.prompt,
+            command: item.command,
+            output: item.output.filter((line) => typeof line === "string"),
+          }))
+      : [];
 
-    return { currentDir, folders, files, submitted: Boolean(parsed.submitted) };
+    return { currentDir, folders, files, entries, submitted: Boolean(parsed.submitted) };
   } catch {
     window.localStorage.removeItem(getStorageKey(username));
-    return { currentDir: HOME_DIR, folders: DEFAULT_FOLDERS, files: DEFAULT_FILES, submitted: false };
+    return {
+      currentDir: HOME_DIR,
+      folders: DEFAULT_FOLDERS,
+      files: DEFAULT_FILES,
+      entries: [],
+      submitted: false,
+    };
   }
 };
 
 export default function Home() {
   const router = useRouter();
+  const rootRef = useRef<HTMLElement | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser] = useState<AppUser | null>(null);
   const [authError, setAuthError] = useState("");
@@ -200,6 +204,7 @@ export default function Home() {
       setCurrentDir(initial.currentDir);
       setFolders(initial.folders);
       setFiles(initial.files);
+      setEntries(initial.entries);
       setSubmitted(initial.submitted);
       setAuthLoading(false);
     };
@@ -212,9 +217,9 @@ export default function Home() {
       return;
     }
 
-    const payload: PersistedState = { currentDir, folders, files, submitted };
+    const payload: PersistedState = { currentDir, folders, files, entries, submitted };
     window.localStorage.setItem(getStorageKey(user.username), JSON.stringify(payload));
-  }, [currentDir, folders, files, submitted, user]);
+  }, [currentDir, folders, files, entries, submitted, user]);
 
   useEffect(() => {
     if (!toast) {
@@ -224,6 +229,24 @@ export default function Home() {
     const timer = setTimeout(() => setToast(""), 2500);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (authLoading || !rootRef.current) {
+      return;
+    }
+
+    const ctx = gsap.context(() => {
+      gsap.from("[data-animate='home-shell']", {
+        y: 14,
+        opacity: 0,
+        duration: 0.45,
+        ease: "power2.out",
+        stagger: 0.08,
+      });
+    }, rootRef);
+
+    return () => ctx.revert();
+  }, [authLoading]);
 
   const resolvePath = (inputPath: string): string => {
     const trimmed = inputPath.trim();
@@ -369,7 +392,9 @@ export default function Home() {
   };
 
   const buildTreeLines = (rootPath: string): string[] => {
-    const lines: string[] = [getFileName(rootPath)];
+    const lines: string[] = ["."];
+    let directoryCount = 0;
+    let fileCount = 0;
 
     const walk = (dirPath: string, prefix: string) => {
       const folderChildren = folders
@@ -392,17 +417,23 @@ export default function Home() {
 
       treeEntries.forEach((entry, index) => {
         const isLast = index === treeEntries.length - 1;
-        const branch = isLast ? "+-- " : "+-- ";
+        const branch = isLast ? "└── " : "├── ";
         lines.push(`${prefix}${branch}${entry.isFolder ? `${entry.name}/` : entry.name}`);
 
         if (entry.isFolder) {
-          const nextPrefix = `${prefix}${isLast ? "    " : "¦   "}`;
+          directoryCount += 1;
+          const nextPrefix = `${prefix}${isLast ? "    " : "│   "}`;
           walk(`${dirPath}/${entry.name}`, nextPrefix);
+          return;
         }
+
+        fileCount += 1;
       });
     };
 
     walk(rootPath, "");
+    lines.push("");
+    lines.push(`${directoryCount} director${directoryCount === 1 ? "y" : "ies"}, ${fileCount} file${fileCount === 1 ? "" : "s"}`);
     return lines;
   };
 
@@ -748,26 +779,26 @@ export default function Home() {
     );
   };
 
-  const resetSimulator = () => {
-    setCurrentDir(HOME_DIR);
-    setFolders(DEFAULT_FOLDERS);
-    setFiles(DEFAULT_FILES);
-    setEntries([]);
-    setEditorOpen(false);
-    setActiveFilePath("");
-    setEditorContent("");
-    setSubmitted(false);
-    requestTerminalFocus();
-  };
-
   const activeSubmissionFile = activeFilePath ? fileMap.get(activeFilePath) ?? null : null;
 
   if (authLoading) {
-    return <main className="min-h-screen bg-[#120414] p-6 text-zinc-100">Memuat sesi...</main>;
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-zinc-200 p-6 text-zinc-900">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-zinc-400 border-t-zinc-700" />
+          <div className="flex items-center gap-1">
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600 [animation-delay:-0.2s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600 [animation-delay:-0.1s]" />
+            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600" />
+          </div>
+          <p className="text-sm text-zinc-700">Memuat sesi...</p>
+        </div>
+      </main>
+    );
   }
 
   if (authError) {
-    return <main className="min-h-screen bg-[#120414] p-6 text-red-300">{authError}</main>;
+    return <main className="min-h-screen bg-zinc-200 p-6 text-red-600">{authError}</main>;
   }
 
   if (!user) {
@@ -775,31 +806,29 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-[#120414] px-3 py-5 text-zinc-100 md:px-6">
+    <main ref={rootRef} className="min-h-screen bg-zinc-200 px-3 py-5 text-zinc-900 md:px-6">
       <div className="mx-auto w-full max-w-6xl space-y-3">
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/80 p-3">
-          <h1 className="text-lg font-semibold text-zinc-100 md:text-xl">Ujian Praktikum Sistem Operasi</h1>
-          <button
-            type="button"
-            onClick={() => setShowHelpPanel((prev) => !prev)}
-            className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-semibold hover:bg-zinc-600"
-          >
-            {showHelpPanel ? "Sembunyikan Bantuan" : "Tampilkan Bantuan"}
-          </button>
+        <div data-animate="home-shell" className="flex items-center justify-between gap-3 rounded-xl border border-zinc-300 bg-white p-3 shadow-sm">
+          <h1 className="text-lg font-semibold text-zinc-900 md:text-xl">Ujian Praktikum Sistem Operasi</h1>
+          {user.role === "admin" ? (
+            <button
+              type="button"
+              onClick={() => setShowHelpPanel((prev) => !prev)}
+              className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-600"
+            >
+              {showHelpPanel ? "Sembunyikan Bantuan" : "Tampilkan Bantuan"}
+            </button>
+          ) : null}
         </div>
 
-        {showHelpPanel ? <HelpPanel /> : null}
+        {user.role === "admin" && showHelpPanel ? <HelpPanel /> : null}
 
-        <Terminal
+        <div data-animate="home-shell">
+          <Terminal
           entries={entries}
           inputValue={terminalInput}
           onInputChange={setTerminalInput}
           onSubmit={runCommand}
-          onClear={() => {
-            setEntries([]);
-            requestTerminalFocus();
-          }}
-          onReset={resetSimulator}
           focusSignal={focusSignal}
           prompt={currentPrompt}
           username={user.username}
@@ -813,7 +842,8 @@ export default function Home() {
           }}
           onLogout={logout}
           submitted={submitted}
-        />
+          />
+        </div>
       </div>
 
       <EditorModal

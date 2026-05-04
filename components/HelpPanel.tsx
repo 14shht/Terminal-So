@@ -22,9 +22,9 @@ const COMMANDS = [
 
 export function HelpPanel() {
   return (
-    <section className="rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-lg">
-      <h2 className="mb-3 text-lg font-semibold text-zinc-100">Command Bantuan</h2>
-      <ul className="space-y-1 font-mono text-sm text-zinc-300">
+    <section data-animate="home-shell" className="rounded-xl border border-zinc-300 bg-white p-4 shadow-sm">
+      <h2 className="mb-3 text-lg font-semibold text-zinc-900">Command Bantuan</h2>
+      <ul className="space-y-1 font-mono text-sm text-zinc-700">
         {COMMANDS.map((command) => (
           <li key={command}>{command}</li>
         ))}

@@ -8,8 +8,6 @@ type TerminalProps = {
   inputValue: string;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
-  onClear: () => void;
-  onReset: () => void;
   focusSignal: number;
   prompt: string;
   username: string;
@@ -23,8 +21,6 @@ export function Terminal({
   inputValue,
   onInputChange,
   onSubmit,
-  onClear,
-  onReset,
   focusSignal,
   prompt,
   username,
@@ -102,20 +98,6 @@ export function Terminal({
           >
             Logout
           </button>
-          <button
-            type="button"
-            onClick={onClear}
-            className="rounded-md bg-zinc-700 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-600"
-          >
-            Clear
-          </button>
-          <button
-            type="button"
-            onClick={onReset}
-            className="rounded-md bg-red-600 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-red-500"
-          >
-            Reset
-          </button>
         </div>
       </div>
 
@@ -145,7 +127,7 @@ export function Terminal({
               {entry.command}
             </p>
             {entry.output.map((line, index) => (
-              <p key={`${entry.id}-${index}`} className="whitespace-pre-wrap text-zinc-200">
+              <p key={`${entry.id}-${index}`} className="whitespace-pre text-zinc-200">
                 {line}
               </p>
             ))}
