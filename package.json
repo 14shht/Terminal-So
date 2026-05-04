@@ -1,5 +1,5 @@
 {
-  "name": "terminal",
+  "name": "ubuntu-web-lab-simulator",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,6 +9,14 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@codemirror/lang-cpp": "^6.0.3",
+    "@codemirror/language": "^6.12.3",
+    "@codemirror/legacy-modes": "^6.5.2",
+    "@codemirror/view": "^6.41.1",
+    "@supabase/supabase-js": "^2.105.1",
+    "@uiw/codemirror-themes": "^4.25.9",
+    "@uiw/react-codemirror": "^4.25.9",
+    "jose": "^6.2.3",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4"

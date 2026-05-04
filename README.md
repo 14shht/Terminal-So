@@ -1,36 +1,88 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+﻿# Ubuntu Web Lab Simulator
 
-## Getting Started
+Terminal-first simulator untuk praktikum Sistem Operasi (Linux command, Bash, C) + fitur ujian (student/admin) dengan Supabase.
 
-First, run the development server:
+## Fitur utama
+- Terminal simulator Ubuntu (frontend only)
+- Editor `gedit/nano` via modal CodeMirror
+- Filesystem simulasi per-user (localStorage)
+- Role login sederhana: `student` dan `admin`
+- Submit ujian oleh student
+- Dashboard admin untuk review submission, beri nilai, feedback
 
+## Environment Variables (`.env.local`)
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+APP_USERS='[
+  {"username":"admin","password":"admin123","name":"Admin","role":"admin"},
+  {"username":"praktikan1","password":"praktikum123","name":"Praktikan 1","role":"student"},
+  {"username":"praktikan2","password":"praktikum123","name":"Praktikan 2","role":"student"}
+]'
+
+AUTH_SECRET="ubah-dengan-random-string"
+SUPABASE_URL="https://xxxxx.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="xxxxx"
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## SQL Supabase
+Jalankan di SQL Editor Supabase:
+```sql
+create extension if not exists pgcrypto;
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+create table if not exists public.submissions (
+  id uuid primary key default gen_random_uuid(),
+  student_username text not null,
+  student_name text not null,
+  exam_title text default 'Ujian Sistem Operasi',
+  files_json jsonb not null,
+  terminal_history jsonb,
+  status text default 'submitted',
+  score integer,
+  feedback text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+create or replace function public.set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
 
-## Learn More
+drop trigger if exists trg_submissions_updated_at on public.submissions;
+create trigger trg_submissions_updated_at
+before update on public.submissions
+for each row
+execute function public.set_updated_at();
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Install & Run
+```bash
+npm install
+npm run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Alur test student
+1. Login: `praktikan1 / praktikum123`
+2. Command:
+   - `mkdir latihan-c`
+   - `cd latihan-c`
+   - `gedit angka.c` (isi kode, Save)
+   - `ls`
+   - `gcc angka.c -o angka`
+   - `./angka`
+3. Klik `Submit Ujian` di header terminal.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Alur test admin
+1. Login: `admin / admin123`
+2. Buka `/admin`.
+3. Klik `Lihat Detail`.
+4. Cek file dan terminal history.
+5. Isi score + feedback, klik `Save Nilai`.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Deploy Vercel
+1. Push ke GitHub.
+2. Import repo ke Vercel.
+3. Isi semua env variable (`APP_USERS`, `AUTH_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`).
+4. Deploy.
