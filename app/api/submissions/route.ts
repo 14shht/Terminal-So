@@ -13,17 +13,11 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json().catch(() => null);
-    console.log("BODY SUBMISSION:", body);
-
-    const userId = body?.userId || body?.user_id || null;
 
     const studentName = body?.student_name || body?.studentName || body?.name;
 
-    const studentUsername =
-      body?.student_username ||
-      body?.studentUsername ||
-      body?.username ||
-      sessionUser.username;
+    // Prevent client-side spoofing: always bind submission owner to active session user.
+    const studentUsername = sessionUser.username;
 
     const fileName = body?.file_name || body?.fileName || body?.nameFile;
 
@@ -31,38 +25,31 @@ export async function POST(req: Request) {
 
     const code = body?.code || body?.content || body?.fileContent;
 
-    if (!studentUsername) {
+    if (!studentName || !studentName.toString().trim()) {
       return NextResponse.json(
         {
-          error: "Username praktikan kosong. Field student_username tidak boleh null.",
-          receivedBody: body,
+          error: "Nama praktikan wajib diisi.",
         },
         { status: 400 },
       );
     }
 
-    if (!studentName || !studentName.toString().trim()) {
-      return NextResponse.json(
-        {
-          error: "Nama praktikan wajib diisi.",
-          receivedBody: body,
-        },
-        { status: 400 },
-      );
-    }
+    const normalizedName = studentName.toString().trim().slice(0, 120);
+    const normalizedFileName = fileName?.toString?.().trim?.() ?? "";
+    const normalizedFilePath = filePath?.toString?.().trim?.() ?? "";
+    const normalizedCode = code?.toString?.() ?? "";
 
     if (!fileName || !filePath || !code) {
       return NextResponse.json(
         {
           error: "Data file submit tidak lengkap.",
           detail: {
-            studentName,
+            studentName: normalizedName,
             studentUsername,
-            fileName,
-            filePath,
-            code: code ? "ada" : "kosong",
+            fileName: normalizedFileName,
+            filePath: normalizedFilePath,
+            code: normalizedCode ? "ada" : "kosong",
           },
-          receivedBody: body,
         },
         { status: 400 },
       );
@@ -71,17 +58,17 @@ export async function POST(req: Request) {
     const { data, error } = await supabaseAdmin
       .from("submissions")
       .insert({
-        user_id: userId,
-        student_name: studentName,
+        user_id: null,
+        student_name: normalizedName,
         student_username: studentUsername,
-        file_name: fileName,
-        file_path: filePath,
-        code,
+        file_name: normalizedFileName,
+        file_path: normalizedFilePath,
+        code: normalizedCode,
         // Backward compatibility for old schema where files_json is NOT NULL.
         files_json: [
           {
-            name: filePath,
-            content: code,
+            name: normalizedFilePath,
+            content: normalizedCode,
             type: "file",
             executable: false,
           },
