@@ -1,18 +1,63 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SubmissionRecord } from "@/lib/types";
 import { gsap } from "gsap";
+import { AppLoadingScreen } from "@/components/AppLoadingScreen";
+
+type AdminUserRow = {
+  id: string;
+  username: string;
+  role: "admin" | "student";
+  created_at: string;
+  questionPdfUrl?: string | null;
+  timer?: {
+    remainingSeconds: number;
+    isPausedIndividual: boolean;
+    endedAt: string | null;
+    endedReason: string | null;
+  } | null;
+};
+
+type AdminSection = "submissions" | "accounts";
 
 export default function AdminPage() {
   const router = useRouter();
   const rootRef = useRef<HTMLElement | null>(null);
+  const [activeSection, setActiveSection] = useState<AdminSection>("submissions");
+
   const [rows, setRows] = useState<SubmissionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [usersError, setUsersError] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<"admin" | "student">("student");
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const [meUsername, setMeUsername] = useState("");
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [roleOpen, setRoleOpen] = useState(false);
+  const roleMenuRef = useRef<HTMLDivElement | null>(null);
+  const [selectedStudent, setSelectedStudent] = useState<AdminUserRow | null>(null);
+  const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [examDurationMinutes, setExamDurationMinutes] = useState(90);
+  const [globalAddMinutes, setGlobalAddMinutes] = useState(5);
+  const [savingExamDuration, setSavingExamDuration] = useState(false);
+  const [isExamPaused, setIsExamPaused] = useState(false);
+  const [togglingPause, setTogglingPause] = useState(false);
+  const [updatingTimerUserId, setUpdatingTimerUserId] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -35,14 +80,37 @@ export default function AdminPage() {
           return;
         }
 
-        const submissionsRes = await fetch("/api/submissions", { cache: "no-store" });
+        setMeUsername(meData.user.username ?? "");
+
+        const [submissionsRes, usersRes, examSettingsRes] = await Promise.all([
+          fetch("/api/submissions", { cache: "no-store" }),
+          fetch("/api/admin/users", { cache: "no-store" }),
+          fetch("/api/admin/exam-settings", { cache: "no-store" }),
+        ]);
+
         const submissionsData = await submissionsRes.json().catch(() => ({}));
+        const usersData = await usersRes.json().catch(() => ({}));
+        const examSettingsData = await examSettingsRes.json().catch(() => ({}));
+
         if (!submissionsRes.ok) {
           setError(submissionsData.error || submissionsData.message || "Gagal memuat submission.");
           setLoading(false);
           return;
         }
 
+        if (!usersRes.ok) {
+          setUsersError(usersData.error || usersData.message || "Gagal memuat data user.");
+        } else {
+          setUsers(usersData.users ?? []);
+          setIsExamPaused(Boolean(usersData.globalTimer?.isPaused));
+        }
+
+        if (examSettingsRes.ok) {
+          setExamDurationMinutes(Number(examSettingsData.settings?.durationMinutes || 90));
+          setIsExamPaused(Boolean(examSettingsData.settings?.isPaused));
+        }
+
+        setUsersLoading(false);
         setRows(submissionsData.submissions ?? []);
         setLoading(false);
       } catch (err) {
@@ -79,6 +147,213 @@ export default function AdminPage() {
     setRows((prev) => prev.filter((item) => item.id !== id));
   };
 
+  const createUser = async () => {
+    const username = newUsername.trim();
+    const password = newPassword;
+    if (!username || !password) {
+      alert("Username dan password wajib diisi.");
+      return;
+    }
+
+    setCreatingUser(true);
+    const response = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, role: newRole }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setCreatingUser(false);
+
+    if (!response.ok) {
+      alert(data.error || data.message || "Gagal membuat user.");
+      return;
+    }
+
+    setUsers((prev) => [data.user, ...prev]);
+    setNewUsername("");
+    setNewPassword("");
+    setNewRole("student");
+    setRoleOpen(false);
+  };
+
+  const updateUser = async (id: string, payload: { role?: "admin" | "student"; password?: string }) => {
+    setUpdatingUserId(id);
+    const response = await fetch(`/api/admin/users/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    setUpdatingUserId(null);
+
+    if (!response.ok) {
+      alert(data.error || data.message || "Gagal update user.");
+      return;
+    }
+
+    setUsers((prev) => prev.map((item) => (item.id === id ? data.user : item)));
+  };
+
+  const deleteUser = async (id: string) => {
+    if (!window.confirm("Yakin ingin menghapus akun ini?")) {
+      return;
+    }
+
+    setDeletingUserId(id);
+    const response = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
+    const data = await response.json().catch(() => ({}));
+    setDeletingUserId(null);
+
+    if (!response.ok) {
+      alert(data.error || data.message || "Gagal menghapus akun.");
+      return;
+    }
+
+    setUsers((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const saveExamDuration = async () => {
+    const parsed = Number(examDurationMinutes);
+    if (!Number.isFinite(parsed) || parsed < 15 || parsed > 300) {
+      alert("Durasi timer harus 15-300 menit.");
+      return;
+    }
+
+    setSavingExamDuration(true);
+    const response = await fetch("/api/admin/exam-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ durationMinutes: parsed }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setSavingExamDuration(false);
+
+    if (!response.ok) {
+      alert(data.error || "Gagal menyimpan durasi timer.");
+      return;
+    }
+
+    setExamDurationMinutes(Number(data.settings?.durationMinutes || parsed));
+    alert("Durasi timer ujian berhasil disimpan.");
+  };
+
+  const toggleExamPause = async () => {
+    setTogglingPause(true);
+    const response = await fetch("/api/admin/exam-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "toggle_pause", nextPaused: !isExamPaused }),
+    });
+    const data = await response.json().catch(() => ({}));
+    setTogglingPause(false);
+
+    if (!response.ok) {
+      alert(data.error || "Gagal mengubah status pause timer.");
+      return;
+    }
+
+    setIsExamPaused(Boolean(data.settings?.isPaused));
+  };
+
+  const addGlobalTimer = async () => {
+    const minutes = Number(globalAddMinutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      alert("Menit tambahan global tidak valid.");
+      return;
+    }
+    const response = await fetch("/api/admin/exam-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add_global_time", minutes }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(data.error || "Gagal menambah timer global.");
+      return;
+    }
+    alert("Timer global berhasil ditambahkan.");
+  };
+
+  const resetGlobalTimer = async () => {
+    const ok = window.confirm("Reset timer semua student ke durasi utama?");
+    if (!ok) return;
+    const response = await fetch("/api/admin/exam-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reset_global_timer" }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      alert(data.error || "Gagal reset timer global.");
+      return;
+    }
+    alert("Timer global berhasil direset.");
+  };
+
+  const runUserTimerAction = async (
+    userId: string,
+    payload: { action: "add_time"; minutes: number } | { action: "toggle_pause"; nextPaused: boolean } | { action: "reset_timer" },
+  ) => {
+    setUpdatingTimerUserId(userId);
+    const response = await fetch(`/api/admin/users/${userId}/timer`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    setUpdatingTimerUserId(null);
+    if (!response.ok) {
+      alert(data.error || "Gagal update timer student.");
+      return false;
+    }
+    return true;
+  };
+
+  const uploadQuestionPdf = async () => {
+    if (!selectedStudent) {
+      setUploadError("User tidak ditemukan.");
+      return;
+    }
+    if (!selectedPdfFile) {
+      setUploadError("Pilih file PDF terlebih dahulu.");
+      return;
+    }
+
+    const validationError = validatePdfFile(selectedPdfFile);
+    if (validationError) {
+      setUploadError(validationError);
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadError("");
+
+    const formData = new FormData();
+    formData.append("file", selectedPdfFile);
+
+    const response = await fetch(`/api/admin/students/${selectedStudent.id}/question-pdf`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json().catch(() => ({}));
+    setIsUploading(false);
+
+    if (!response.ok) {
+      setUploadError(data.error || "Gagal mengupload soal PDF.");
+      return;
+    }
+
+    setUsers((prev) =>
+      prev.map((user) =>
+        user.id === selectedStudent.id
+          ? { ...user, questionPdfUrl: data.user?.questionPdfUrl || `/api/questions/${user.id}/pdf` }
+          : user,
+      ),
+    );
+    alert("Soal PDF berhasil diupload.");
+    resetUploadModalState();
+  };
+
   useEffect(() => {
     if (loading || !rootRef.current) {
       return;
@@ -97,104 +372,647 @@ export default function AdminPage() {
     return () => ctx.revert();
   }, [loading]);
 
+  useEffect(() => {
+    const onOutsideClick = (event: MouseEvent) => {
+      if (!roleMenuRef.current) {
+        return;
+      }
+      if (!roleMenuRef.current.contains(event.target as Node)) {
+        setRoleOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", onOutsideClick);
+    return () => document.removeEventListener("mousedown", onOutsideClick);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (pdfPreviewUrl) {
+        URL.revokeObjectURL(pdfPreviewUrl);
+      }
+    };
+  }, [pdfPreviewUrl]);
+
+  const resetUploadModalState = () => {
+    if (pdfPreviewUrl) {
+      URL.revokeObjectURL(pdfPreviewUrl);
+    }
+    setSelectedPdfFile(null);
+    setPdfPreviewUrl(null);
+    setUploadError("");
+    setIsUploading(false);
+    setIsUploadModalOpen(false);
+    setSelectedStudent(null);
+  };
+
+  const openUploadModal = (student: AdminUserRow) => {
+    if (pdfPreviewUrl) {
+      URL.revokeObjectURL(pdfPreviewUrl);
+    }
+    setSelectedStudent(student);
+    setSelectedPdfFile(null);
+    setPdfPreviewUrl(null);
+    setUploadError("");
+    setIsUploadModalOpen(true);
+  };
+
+  const validatePdfFile = (file: File) => {
+    if (!file) {
+      return "Pilih file PDF terlebih dahulu.";
+    }
+    const isPdf = file.type === "application/pdf" && file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      return "File harus berupa PDF.";
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      return "Ukuran PDF maksimal 10MB.";
+    }
+    return "";
+  };
+
+  const onSelectPdfFile = (file: File | null) => {
+    if (!file) {
+      setUploadError("Pilih file PDF terlebih dahulu.");
+      return;
+    }
+
+    const validationError = validatePdfFile(file);
+    if (validationError) {
+      setUploadError(validationError);
+      return;
+    }
+
+    if (pdfPreviewUrl) {
+      URL.revokeObjectURL(pdfPreviewUrl);
+    }
+    setSelectedPdfFile(file);
+    setUploadError("");
+    setPdfPreviewUrl(URL.createObjectURL(file));
+  };
+
   if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-zinc-200 p-6 text-zinc-900">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-10 w-10 animate-spin rounded-full border-4 border-zinc-400 border-t-zinc-700" />
-          <div className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600 [animation-delay:-0.2s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600 [animation-delay:-0.1s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600" />
-          </div>
-          <p className="text-sm text-zinc-700">Loading...</p>
-        </div>
-      </main>
-    );
+    return <AppLoadingScreen title="Memuat Admin Dashboard" subtitle="Menyiapkan data submission dan akun..." />;
   }
 
   if (error) {
-    return <main className="min-h-screen bg-zinc-200 p-6 text-red-600">{error}</main>;
+    return <main className="min-h-screen bg-zinc-100 p-6 text-red-600">{error}</main>;
   }
 
   return (
-    <main ref={rootRef} className="min-h-screen bg-zinc-200 p-6 text-zinc-900">
-      <div className="mx-auto max-w-6xl">
-        <div data-animate="admin-shell" className="mb-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Admin Dashboard</h1>
+    <main
+      ref={rootRef}
+      className="min-h-screen bg-[linear-gradient(165deg,#efefec_0%,#f6f5f2_45%,#ecebe7_100%)] p-4 text-zinc-900 md:p-8"
+    >
+      <div className="mx-auto max-w-7xl">
+        <div
+          data-animate="admin-shell"
+          className="mb-5 rounded-2xl border border-zinc-200 bg-white/90 p-4 shadow-[0_12px_35px_-20px_rgba(0,0,0,0.45)] backdrop-blur md:p-5"
+        >
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-orange-600">Control Center</p>
+              <h1 className="mt-1 text-3xl font-semibold tracking-tight">Admin Dashboard</h1>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLogoutConfirm(true)}
+              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm font-semibold text-white transition hover:bg-zinc-700"
+            >
+              Logout
+            </button>
           </div>
-          <button onClick={logout} className="rounded bg-zinc-700 px-3 py-2 text-sm text-white">Logout</button>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveSection("submissions")}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                activeSection === "submissions"
+                  ? "bg-orange-500 text-white shadow-sm"
+                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+              }`}
+            >
+              Cek Submission
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSection("accounts")}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+                activeSection === "accounts"
+                  ? "bg-orange-500 text-white shadow-sm"
+                  : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+              }`}
+            >
+              Buat & Kelola Akun
+            </button>
+          </div>
         </div>
 
-        {rows.length === 0 ? (
-          <div className="rounded-lg border border-zinc-300 bg-zinc-100 p-6 text-zinc-600">Belum ada submission.</div>
+        {activeSection === "submissions" ? (
+          <section
+            data-animate="admin-shell"
+            className="rounded-2xl border border-zinc-200 bg-white/95 p-4 shadow-[0_15px_40px_-24px_rgba(0,0,0,0.5)] md:p-5"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-xl font-semibold">Daftar Submission</h2>
+              <span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-600">
+                Total: {rows.length}
+              </span>
+            </div>
+
+            {rows.length === 0 ? (
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-6 text-zinc-600">
+                Belum ada submission.
+              </div>
+            ) : (
+              <div className="overflow-auto rounded-lg border border-zinc-200">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-zinc-100 text-zinc-700">
+                    <tr>
+                      <th className="px-3 py-2">No</th>
+                      <th className="px-3 py-2">Nama Praktikan</th>
+                      <th className="px-3 py-2">Username</th>
+                      <th className="px-3 py-2">Nama File</th>
+                      <th className="px-3 py-2">Waktu Submit</th>
+                      <th className="px-3 py-2">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, idx) => {
+                      const submittedAt =
+                        (row as SubmissionRecord & { created_at?: string }).submitted_at ||
+                        (row as SubmissionRecord & { created_at?: string }).created_at;
+                      return (
+                        <tr key={row.id} className="border-t border-zinc-200">
+                          <td className="px-3 py-2">{idx + 1}</td>
+                          <td className="px-3 py-2">
+                            {(row as SubmissionRecord & { student_name?: string }).name ||
+                              (row as SubmissionRecord & { student_name?: string }).student_name ||
+                              "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {(row as SubmissionRecord & { student_username?: string }).username ||
+                              (row as SubmissionRecord & { student_username?: string }).student_username ||
+                              "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {(row as SubmissionRecord & { file_name?: string }).file_name || "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {submittedAt ? new Date(submittedAt).toLocaleString() : "-"}
+                          </td>
+                          <td className="px-3 py-2">
+                            <Link
+                              className="inline-flex rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-500"
+                              href={`/admin/submissions/${row.id}`}
+                            >
+                              Lihat Detail
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void deleteSubmission(row.id);
+                              }}
+                              disabled={deletingId === row.id}
+                              className="ml-2 inline-flex rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {deletingId === row.id ? "Menghapus..." : "Hapus"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         ) : (
-          <div data-animate="admin-shell" className="overflow-auto rounded-lg border border-zinc-300 bg-white">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-zinc-100 text-zinc-700">
-                <tr>
-                  <th className="px-3 py-2">No</th>
-                  <th className="px-3 py-2">Nama Praktikan</th>
-                  <th className="px-3 py-2">Username</th>
-                  <th className="px-3 py-2">Nama File</th>
-                  <th className="px-3 py-2">Waktu Submit</th>
-                  <th className="px-3 py-2">Aksi</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, idx) => (
-                  (() => {
-                    const submittedAt =
-                      (row as SubmissionRecord & { created_at?: string }).submitted_at ||
-                      (row as SubmissionRecord & { created_at?: string }).created_at;
-                    return (
-                  <tr key={row.id} className="border-t border-zinc-200">
-                    <td className="px-3 py-2">{idx + 1}</td>
-                    <td className="px-3 py-2">
-                      {(row as SubmissionRecord & { student_name?: string }).name ||
-                        (row as SubmissionRecord & { student_name?: string }).student_name ||
-                        "-"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {(row as SubmissionRecord & { student_username?: string }).username ||
-                        (row as SubmissionRecord & { student_username?: string }).student_username ||
-                        "-"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {(row as SubmissionRecord & { file_name?: string }).file_name || "-"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {submittedAt ? new Date(submittedAt).toLocaleString() : "-"}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Link
-                        className="inline-flex rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-500"
-                        href={`/admin/submissions/${row.id}`}
-                      >
-                        Lihat Detail
-                      </Link>
+          <section
+            data-animate="admin-shell"
+            className="rounded-2xl border border-zinc-200 bg-white/95 p-4 shadow-[0_15px_40px_-24px_rgba(0,0,0,0.5)] md:p-5"
+          >
+            <h2 className="text-xl font-semibold">Buat & Kelola Akun</h2>
+
+            <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-2.5 md:p-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">Pengaturan Timer Ujian</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="number"
+                  min={15}
+                  max={300}
+                  value={examDurationMinutes}
+                  onChange={(event) => setExamDurationMinutes(Number(event.target.value))}
+                  className="w-40 rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                />
+                <span className="text-sm text-zinc-600">menit (berlaku untuk sesi ujian baru)</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void saveExamDuration();
+                  }}
+                  disabled={savingExamDuration}
+                  className="rounded-md bg-indigo-600 px-3 py-1 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-60"
+                >
+                  {savingExamDuration ? "Menyimpan..." : "Simpan Timer"}
+                </button>
+                <input
+                  type="number"
+                  min={1}
+                  max={300}
+                  value={globalAddMinutes}
+                  onChange={(event) => setGlobalAddMinutes(Number(event.target.value))}
+                  className="w-28 rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    void addGlobalTimer();
+                  }}
+                  className="rounded-md bg-cyan-600 px-3 py-1 text-sm font-semibold text-white transition hover:bg-cyan-500"
+                >
+                  Tambah Timer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void toggleExamPause();
+                  }}
+                  disabled={togglingPause}
+                  className={`rounded-md px-3 py-1 text-sm font-semibold text-white transition disabled:opacity-60 ${
+                    isExamPaused
+                      ? "bg-emerald-600 hover:bg-emerald-500"
+                      : "bg-amber-600 hover:bg-amber-500"
+                  }`}
+                >
+                  {togglingPause ? "Memproses..." : isExamPaused ? "Resume Timer" : "Pause Timer"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void resetGlobalTimer();
+                  }}
+                  className="rounded-md bg-rose-600 px-3 py-1 text-sm font-semibold text-white transition hover:bg-rose-500"
+                >
+                  Reset Timer
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50/80 p-2.5 md:p-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">Buat Akun Baru</p>
+              <div className="grid gap-1.5 md:grid-cols-4">
+              <input
+                value={newUsername}
+                onChange={(event) => setNewUsername(event.target.value)}
+                placeholder="Username / NPM"
+                className="rounded-md border border-zinc-300 bg-white px-2 py-0.5 text-[13px] outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+              />
+              <input
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                placeholder="Password"
+                className="rounded-md border border-zinc-300 bg-white px-2 py-0.5 text-[13px] outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+              />
+              <div
+                ref={roleMenuRef}
+                onClick={() => setRoleOpen((prev) => !prev)}
+                className="relative cursor-pointer rounded-md border border-zinc-200 bg-white px-2 py-0.5 shadow-sm transition hover:border-zinc-300 hover:shadow"
+              >
+                <p className="mb-0 text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Role Akses</p>
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between bg-transparent text-[13px] font-semibold text-zinc-800 outline-none"
+                >
+                  <span className="capitalize">{newRole}</span>
+                  <span className={`text-zinc-500 transition-transform ${roleOpen ? "rotate-180" : "rotate-0"}`}>▼</span>
+                </button>
+                {roleOpen ? (
+                  <div
+                    onClick={(event) => event.stopPropagation()}
+                    className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-[0_12px_30px_-18px_rgba(0,0,0,0.55)]"
+                  >
+                    {(["student", "admin"] as const).map((roleOption) => (
                       <button
+                        key={roleOption}
                         type="button"
                         onClick={() => {
-                          void deleteSubmission(row.id);
+                          setNewRole(roleOption);
+                          setRoleOpen(false);
                         }}
-                        disabled={deletingId === row.id}
-                        className="ml-2 inline-flex rounded-md bg-red-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                        className={`flex w-full items-center justify-between px-2.5 py-1 text-left text-[13px] transition ${
+                          newRole === roleOption
+                            ? "bg-orange-50 font-semibold text-orange-700"
+                            : "text-zinc-700 hover:bg-zinc-50"
+                        }`}
                       >
-                        {deletingId === row.id ? "Menghapus..." : "Hapus"}
+                        <span className="capitalize">{roleOption}</span>
+                        {newRole === roleOption ? <span className="text-xs">Selected</span> : null}
                       </button>
-                    </td>
-                  </tr>
-                    );
-                  })()
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  void createUser();
+                }}
+                disabled={creatingUser}
+                            className="rounded-md bg-orange-500 px-3 py-0.5 text-[13px] font-semibold text-white transition hover:bg-orange-400 disabled:opacity-60"
+              >
+                {creatingUser ? "Menyimpan..." : "Tambah Akun"}
+              </button>
+              </div>
+            </div>
+
+            {usersError ? <p className="mt-3 text-sm text-red-600">{usersError}</p> : null}
+            {usersLoading ? (
+              <p className="mt-3 text-sm text-zinc-500">Memuat data user...</p>
+            ) : (
+              <div className="mt-4 overflow-auto rounded-lg border border-zinc-200">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-zinc-100 text-zinc-700">
+                    <tr>
+                      <th className="px-3 py-2">Username</th>
+                      <th className="px-3 py-2">Role</th>
+                      <th className="px-3 py-2">Dibuat</th>
+                      <th className="px-3 py-2">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map((item) => {
+                      const isAdminRow = item.role === "admin";
+                      return (
+                      <tr key={item.id} className="border-t border-zinc-200">
+                        <td className="px-3 py-2">{item.username}</td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              item.role === "admin"
+                                ? "bg-blue-100 text-blue-700"
+                                : "bg-emerald-100 text-emerald-700"
+                            }`}
+                          >
+                            {item.role}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {item.created_at ? new Date(item.created_at).toLocaleString() : "-"}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex flex-wrap gap-2">
+                          {item.role === "student" ? (
+                            <button
+                              type="button"
+                              onClick={() => openUploadModal(item)}
+                              className="rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                            >
+                              {item.questionPdfUrl ? "Ganti Soal" : "Upload Soal"}
+                            </button>
+                          ) : null}
+                          {item.role === "student" ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const input = window.prompt("Tambah menit untuk student ini:", "5");
+                                  if (!input) return;
+                                  const minutes = Number(input);
+                                  if (!Number.isFinite(minutes) || minutes <= 0) {
+                                    alert("Menit tidak valid.");
+                                    return;
+                                  }
+                                  void (async () => {
+                                    const ok = await runUserTimerAction(item.id, { action: "add_time", minutes });
+                                    if (ok) alert("Timer student berhasil ditambah.");
+                                  })();
+                                }}
+                                disabled={updatingTimerUserId === item.id}
+                                className="rounded-md bg-cyan-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-60"
+                              >
+                                Tambah Timer
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void (async () => {
+                                    const ok = await runUserTimerAction(item.id, {
+                                      action: "toggle_pause",
+                                      nextPaused: !Boolean(item.timer?.isPausedIndividual),
+                                    });
+                                    if (ok) {
+                                      setUsers((prev) =>
+                                        prev.map((u) =>
+                                          u.id === item.id
+                                            ? {
+                                                ...u,
+                                                timer: {
+                                                  remainingSeconds: u.timer?.remainingSeconds ?? 0,
+                                                  isPausedIndividual: !Boolean(u.timer?.isPausedIndividual),
+                                                  endedAt: u.timer?.endedAt ?? null,
+                                                  endedReason: u.timer?.endedReason ?? null,
+                                                },
+                                              }
+                                            : u,
+                                        ),
+                                      );
+                                    }
+                                  })();
+                                }}
+                                disabled={updatingTimerUserId === item.id}
+                                className="rounded-md bg-amber-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
+                              >
+                                {item.timer?.isPausedIndividual ? "Resume Timer" : "Pause Timer"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void (async () => {
+                                    const ok = await runUserTimerAction(item.id, { action: "reset_timer" });
+                                    if (ok) alert("Timer student berhasil direset.");
+                                  })();
+                                }}
+                                disabled={updatingTimerUserId === item.id}
+                                className="rounded-md bg-fuchsia-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-fuchsia-500 disabled:opacity-60"
+                              >
+                                Reset Timer
+                              </button>
+                            </>
+                          ) : null}
+                          {item.role === "student" && item.questionPdfUrl ? (
+                            <a
+                              href={item.questionPdfUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="rounded-md bg-blue-100 px-2.5 py-1.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-200"
+                            >
+                              Lihat Soal
+                            </a>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const targetRole = item.role === "admin" ? "student" : "admin";
+                              void updateUser(item.id, { role: targetRole });
+                            }}
+                            disabled={updatingUserId === item.id || isAdminRow}
+                            className="rounded-md bg-zinc-700 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-zinc-600 disabled:opacity-60"
+                          >
+                            {isAdminRow ? "Role Terkunci" : updatingUserId === item.id ? "..." : `Jadikan ${item.role === "admin" ? "student" : "admin"}`}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newPass = window.prompt(`Password baru untuk ${item.username}:`);
+                              if (!newPass || !newPass.trim()) {
+                                return;
+                              }
+                              void updateUser(item.id, { password: newPass.trim() });
+                            }}
+                            disabled={updatingUserId === item.id}
+                            className="rounded-md bg-amber-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-60"
+                          >
+                            Reset Password
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (item.username === meUsername) {
+                                alert("Akun admin yang sedang login tidak bisa dihapus.");
+                                return;
+                              }
+                              void deleteUser(item.id);
+                            }}
+                            disabled={deletingUserId === item.id || item.username === meUsername || isAdminRow}
+                            className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-red-500 disabled:opacity-60"
+                          >
+                            {deletingUserId === item.id ? "Menghapus..." : "Hapus"}
+                          </button>
+                          </div>
+                        </td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         )}
       </div>
+
+      {isUploadModalOpen && selectedStudent ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            className={`w-full rounded-xl border border-zinc-700 bg-zinc-900 p-4 text-zinc-100 shadow-2xl ${
+              selectedPdfFile ? "max-w-4xl" : "max-w-2xl"
+            }`}
+          >
+            <h2 className="text-lg font-semibold">
+              {selectedStudent.questionPdfUrl
+                ? `Ganti Soal untuk ${selectedStudent.username}`
+                : `Upload Soal untuk ${selectedStudent.username}`}
+            </h2>
+            <p className="mt-1 text-sm text-zinc-300">
+              Pilih file PDF (maksimal 10MB), lalu konfirmasi upload.
+            </p>
+
+            {!selectedPdfFile ? (
+              <div className="mt-4 rounded-lg border border-zinc-700 bg-zinc-950 p-4">
+                <input
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  onChange={(event) => onSelectPdfFile(event.target.files?.[0] ?? null)}
+                  className="block w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
+                />
+                <p className="mt-2 text-xs text-zinc-400">Format: PDF, maksimal 10MB.</p>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-lg border border-zinc-700 bg-zinc-950 p-3 text-sm">
+                  <p>Nama file: {selectedPdfFile.name}</p>
+                  <p>Ukuran: {(selectedPdfFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                </div>
+                {pdfPreviewUrl ? (
+                  <iframe
+                    title="Preview Soal PDF"
+                    src={pdfPreviewUrl}
+                    className="h-[60vh] w-full rounded-lg border border-zinc-700 bg-white"
+                  />
+                ) : null}
+              </div>
+            )}
+
+            {uploadError ? <p className="mt-3 text-sm text-red-400">{uploadError}</p> : null}
+
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              {selectedPdfFile ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (pdfPreviewUrl) {
+                      URL.revokeObjectURL(pdfPreviewUrl);
+                    }
+                    setSelectedPdfFile(null);
+                    setPdfPreviewUrl(null);
+                    setUploadError("");
+                  }}
+                  className="rounded-md bg-zinc-700 px-3 py-2 text-sm text-zinc-100"
+                >
+                  Ganti File
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={resetUploadModalState}
+                className="rounded-md bg-zinc-700 px-3 py-2 text-sm text-zinc-100"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void uploadQuestionPdf();
+                }}
+                disabled={!selectedPdfFile || isUploading}
+                className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+              >
+                {isUploading ? "Mengupload..." : "Konfirmasi Upload"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showLogoutConfirm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-4">
+            <h2 className="text-lg font-semibold text-zinc-100">Konfirmasi Logout</h2>
+            <p className="mt-2 text-sm text-zinc-300">Anda yakin ingin logout?</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirm(false)}
+                className="rounded-md bg-zinc-700 px-3 py-2 text-sm text-zinc-100"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLogoutConfirm(false);
+                  void logout();
+                }}
+                className="rounded-md bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-500"
+              >
+                Ya, Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
-

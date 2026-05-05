@@ -16,8 +16,10 @@ export type TerminalEntry = {
 export type AppRole = "student" | "admin";
 
 export type AppUser = {
+  id?: string;
   username: string;
   role: AppRole;
+  questionPdfUrl?: string | null;
 };
 
 export type SubmissionRecord = {

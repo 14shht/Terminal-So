@@ -1,5 +1,7 @@
-﻿import { NextResponse } from "next/server";
-import { getAppUsers, setSessionCookie } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { setSessionCookie } from "@/lib/auth";
+import { verifyPassword } from "@/lib/password";
+import { getSupabaseAdmin } from "@/lib/supabase-server";
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -10,11 +12,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ message: "Username dan password wajib diisi." }, { status: 400 });
   }
 
-  const user = getAppUsers().find(
-    (item) => item.username === username && item.password === password,
-  );
+  const supabase = getSupabaseAdmin();
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("username, role, password_hash")
+    .eq("username", username)
+    .maybeSingle();
 
-  if (!user) {
+  if (error) {
+    console.error("[POST /api/login] supabase error:", error);
+    return NextResponse.json({ message: "Gagal memproses login." }, { status: 500 });
+  }
+
+  if (!user || !verifyPassword(password, user.password_hash)) {
     return NextResponse.json({ message: "Username atau password salah." }, { status: 401 });
   }
 
@@ -26,4 +36,3 @@ export async function POST(request: Request) {
   await setSessionCookie(sessionUser);
   return NextResponse.json({ user: sessionUser });
 }
-

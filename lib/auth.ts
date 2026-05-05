@@ -8,10 +8,6 @@ export type SessionUser = {
   role: AppRole;
 };
 
-type AppUserRecord = SessionUser & {
-  password: string;
-};
-
 const COOKIE_NAME = "uwls_session";
 
 const getSecretKey = () => {
@@ -20,20 +16,6 @@ const getSecretKey = () => {
     throw new Error("AUTH_SECRET is not set");
   }
   return new TextEncoder().encode(secret);
-};
-
-export const getAppUsers = (): AppUserRecord[] => {
-  const raw = process.env.APP_USERS;
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as AppUserRecord[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
 };
 
 export const createSessionToken = async (user: SessionUser): Promise<string> => {

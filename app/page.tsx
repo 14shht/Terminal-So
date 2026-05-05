@@ -1,10 +1,11 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { EditorModal } from "@/components/EditorModal";
 import { HelpPanel } from "@/components/HelpPanel";
 import { Terminal } from "@/components/Terminal";
+import { AppLoadingScreen } from "@/components/AppLoadingScreen";
 import { AppUser, FileSystemItem, TerminalEntry } from "@/lib/types";
 import { gsap } from "gsap";
 
@@ -19,6 +20,28 @@ type PersistedState = {
   files: FileSystemItem[];
   entries: TerminalEntry[];
   submitted: boolean;
+};
+
+type InteractiveRunState = {
+  mode: "c" | "sh";
+  prompts: string[];
+  answers: string[];
+  sourceCode: string;
+  shellVars?: string[];
+  shellOutputTemplates?: string[];
+};
+
+type ExamSessionResponse = {
+  session: {
+    startedAt: string;
+    durationMinutes: number;
+    expiresAt: string;
+    remainingSeconds: number;
+    isPaused: boolean;
+    isPausedIndividual: boolean;
+    now: string;
+    status: "active" | "submitted" | "timeout";
+  };
 };
 
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -70,9 +93,159 @@ const parseEchoLines = (content: string): string[] => {
     .map((line) => line.replace(/^echo\s+/, "").trim().replace(/^['\"]|['\"]$/g, ""));
 };
 
+const extractShellEchoText = (line: string): { text: string; noNewLine: boolean } | null => {
+  const trimmed = line.trim();
+  const match = trimmed.match(/^echo\s+(-n\s+)?(.+)$/);
+  if (!match) {
+    return null;
+  }
+  const rawText = (match[2] ?? "").trim();
+  const unquoted = rawText.replace(/^['"]|['"]$/g, "");
+  return { text: unquoted, noNewLine: Boolean(match[1]) };
+};
+
+const parseShellInteractiveScript = (content: string): {
+  initialOutput: string[];
+  prompts: string[];
+  inputVars: string[];
+  tailOutputTemplates: string[];
+} => {
+  const lines = content.split("\n");
+  const initialOutput: string[] = [];
+  const prompts: string[] = [];
+  const inputVars: string[] = [];
+  const tailOutputTemplates: string[] = [];
+  let seenRead = false;
+  let pendingPrompt = "";
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const echo = extractShellEchoText(line);
+    if (echo) {
+      if (echo.noNewLine) {
+        pendingPrompt = echo.text;
+      } else if (!seenRead) {
+        initialOutput.push(echo.text);
+      } else {
+        tailOutputTemplates.push(echo.text);
+      }
+      continue;
+    }
+
+    const readMatch = line.match(/^read\s+([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    if (readMatch) {
+      seenRead = true;
+      inputVars.push(readMatch[1]);
+      prompts.push(pendingPrompt || `Input ${inputVars.length}:`);
+      pendingPrompt = "";
+      continue;
+    }
+
+    if (seenRead) {
+      tailOutputTemplates.push(line);
+    }
+  }
+
+  return { initialOutput, prompts, inputVars, tailOutputTemplates };
+};
+
+const evaluateShellMath = (expr: string, env: Record<string, string>): string => {
+  const replaced = expr.replace(/[a-zA-Z_][a-zA-Z0-9_]*/g, (name) => env[name] ?? "0");
+  if (!/^[0-9+\-*/% ().]+$/.test(replaced)) {
+    return "0";
+  }
+  try {
+    const result = Function(`"use strict"; return (${replaced});`)();
+    if (typeof result === "number" && Number.isFinite(result)) {
+      return `${result}`;
+    }
+    return "0";
+  } catch {
+    return "0";
+  }
+};
+
+const renderShellOutputWithInputs = (
+  sourceCode: string,
+  prompts: string[],
+  inputVars: string[],
+  answers: string[],
+  tailOutputTemplates: string[],
+): string[] => {
+  const env: Record<string, string> = {};
+  inputVars.forEach((key, index) => {
+    env[key] = answers[index] ?? "";
+  });
+
+  const assignmentLines = sourceCode
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.includes("="));
+
+  for (const line of assignmentLines) {
+    const mathMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)=\$\(\((.+)\)\)$/);
+    if (mathMatch) {
+      env[mathMatch[1]] = evaluateShellMath(mathMatch[2], env);
+      continue;
+    }
+
+    const assignMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)=(.+)$/);
+    if (assignMatch) {
+      const rawValue = assignMatch[2].trim().replace(/^['"]|['"]$/g, "");
+      env[assignMatch[1]] = rawValue.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "");
+    }
+  }
+
+  return tailOutputTemplates
+    .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? ""))
+    .map((line) => line.replace(/^echo\s+/, "").trim())
+    .filter((line) => line && !prompts.includes(line));
+};
+
 const parsePrintfLines = (content: string): string[] => {
   const matches = [...content.matchAll(/printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g)];
   return matches.map((match) => match[1].replace(/\\n/g, "").trim()).filter(Boolean);
+};
+
+const extractInteractivePrompts = (content: string): string[] => {
+  const lines = content.split("\n");
+  const prompts: string[] = [];
+  let lastPrintf = "";
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const printfMatch = line.match(/printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+    if (printfMatch) {
+      lastPrintf = printfMatch[1].replace(/\\n/g, "\n").trim();
+    }
+    if (/scanf\s*\(/.test(line)) {
+      prompts.push(lastPrintf || `Input ${prompts.length + 1}:`);
+      lastPrintf = "";
+    }
+  }
+
+  return prompts;
+};
+
+const renderProgramOutputWithInputs = (content: string, answers: string[], prompts: string[]): string[] => {
+  const lines = parsePrintfLines(content);
+  const promptSet = new Set(prompts);
+  let answerIndex = 0;
+
+  return lines
+    .map((line) =>
+      line.replace(/%[-+0-9.]*[a-zA-Z]/g, () => {
+        const answer = answers[answerIndex] ?? "";
+        answerIndex += 1;
+        return answer;
+      }),
+    )
+    .map((line) => line.trim())
+    .filter((line) => line && !promptSet.has(line));
 };
 
 const upsertFile = (files: FileSystemItem[], nextFile: FileSystemItem): FileSystemItem[] => {
@@ -154,8 +327,9 @@ const getInitialState = (username: string): PersistedState => {
   }
 };
 
-export default function Home() {
+function HomeContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const rootRef = useRef<HTMLElement | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [user, setUser] = useState<AppUser | null>(null);
@@ -177,6 +351,23 @@ export default function Home() {
   const [showNameModal, setShowNameModal] = useState(false);
   const [studentNameInput, setStudentNameInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [interactiveRun, setInteractiveRun] = useState<InteractiveRunState | null>(null);
+  const [confirmAction, setConfirmAction] = useState<"submit" | "logout" | null>(null);
+  const [showPdfPreview, setShowPdfPreview] = useState(true);
+  const [showMobilePdfModal, setShowMobilePdfModal] = useState(false);
+  const [pdfLoadingDesktop, setPdfLoadingDesktop] = useState(true);
+  const [pdfLoadingMobile, setPdfLoadingMobile] = useState(true);
+  const [remainingSeconds, setRemainingSeconds] = useState<number>(90 * 60);
+  const [timeExpired, setTimeExpired] = useState(false);
+  const [isExamPaused, setIsExamPaused] = useState(false);
+  const [isIndividualPaused, setIsIndividualPaused] = useState(false);
+
+  const allowAdminTerminal = searchParams.get("admin_terminal") === "1";
+  const adminReturnRaw = searchParams.get("admin_return");
+  const adminReturnPath =
+    adminReturnRaw && adminReturnRaw.startsWith("/admin/submissions/")
+      ? adminReturnRaw
+      : "/admin";
 
   useEffect(() => {
     const loadMe = async () => {
@@ -194,7 +385,7 @@ export default function Home() {
       }
 
       const nextUser = data.user as AppUser;
-      if (nextUser.role === "admin") {
+      if (nextUser.role === "admin" && !allowAdminTerminal) {
         router.replace("/admin");
         return;
       }
@@ -210,7 +401,38 @@ export default function Home() {
     };
 
     void loadMe();
-  }, [router]);
+  }, [allowAdminTerminal, router]);
+
+  useEffect(() => {
+    if (!user || user.role !== "student") {
+      return;
+    }
+
+    const loadSession = async () => {
+      const response = await fetch(`/api/exam/session?t=${Date.now()}`, {
+        cache: "no-store",
+        headers: { "cache-control": "no-store" },
+      });
+      const data = (await response.json().catch(() => null)) as ExamSessionResponse | null;
+      if (!response.ok || !data?.session) {
+        return;
+      }
+
+      setRemainingSeconds(Math.max(0, Number(data.session.remainingSeconds || 0)));
+      setIsExamPaused(Boolean(data.session.isPaused));
+      setIsIndividualPaused(Boolean(data.session.isPaused) ? false : Boolean(data.session.isPausedIndividual));
+      setTimeExpired(data.session.status === "timeout" || data.session.remainingSeconds <= 0);
+      if (data.session.status === "submitted") {
+        setSubmitted(true);
+      }
+    };
+
+    void loadSession();
+    const poll = setInterval(() => {
+      void loadSession();
+    }, 1000);
+    return () => clearInterval(poll);
+  }, [user]);
 
   useEffect(() => {
     if (!user || typeof window === "undefined") {
@@ -446,6 +668,11 @@ export default function Home() {
     if (!user) {
       return;
     }
+    if (timeExpired) {
+      setToast("Waktu ujian habis. Submit dinonaktifkan.");
+      setShowNameModal(false);
+      return;
+    }
 
     const targetPath = activeFilePath.trim();
     if (!targetPath) {
@@ -475,6 +702,9 @@ export default function Home() {
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
+      if (typeof data?.error === "string" && data.error.toLowerCase().includes("waktu ujian habis")) {
+        setTimeExpired(true);
+      }
       setToast(data.error || data.message || "Gagal mengirim ujian.");
       return;
     }
@@ -486,11 +716,41 @@ export default function Home() {
   };
 
   const runCommand = () => {
-    const command = terminalInput.trim();
+    const rawInput = terminalInput;
+    const command = rawInput.trim();
     const promptAtCommand = currentPrompt;
 
     setTerminalInput("");
     requestTerminalFocus();
+
+    if (interactiveRun) {
+      if (!rawInput.trim()) {
+        return;
+      }
+
+      const nextAnswers = [...interactiveRun.answers, rawInput.trim()];
+      pushEntry(rawInput.trim(), [], promptAtCommand);
+
+      if (nextAnswers.length < interactiveRun.prompts.length) {
+        pushEntry("(stdin)", [interactiveRun.prompts[nextAnswers.length]], promptAtCommand);
+        setInteractiveRun({ ...interactiveRun, answers: nextAnswers });
+        return;
+      }
+
+      const finalLines =
+        interactiveRun.mode === "c"
+          ? renderProgramOutputWithInputs(interactiveRun.sourceCode, nextAnswers, interactiveRun.prompts)
+          : renderShellOutputWithInputs(
+              interactiveRun.sourceCode,
+              interactiveRun.prompts,
+              interactiveRun.shellVars ?? [],
+              nextAnswers,
+              interactiveRun.shellOutputTemplates ?? [],
+            );
+      pushEntry("(program output)", finalLines.length > 0 ? finalLines : ["(tidak ada output)"], promptAtCommand);
+      setInteractiveRun(null);
+      return;
+    }
 
     if (!command) {
       return;
@@ -754,17 +1014,40 @@ export default function Home() {
           return;
         }
 
+        const shellFlow = parseShellInteractiveScript(file.content);
+        if (shellFlow.prompts.length > 0 && shellFlow.inputVars.length > 0) {
+          pushEntry(
+            command,
+            [...shellFlow.initialOutput, shellFlow.prompts[0]].filter(Boolean),
+            promptAtCommand,
+          );
+          setInteractiveRun({
+            mode: "sh",
+            prompts: shellFlow.prompts,
+            answers: [],
+            sourceCode: file.content,
+            shellVars: shellFlow.inputVars,
+            shellOutputTemplates: shellFlow.tailOutputTemplates,
+          });
+          return;
+        }
+
         const echoLines = parseEchoLines(file.content);
-        pushEntry(
-          command,
-          echoLines.length > 0 ? echoLines : ["Script berhasil dijalankan."],
-          promptAtCommand,
-        );
+        pushEntry(command, echoLines.length > 0 ? echoLines : ["Script berhasil dijalankan."], promptAtCommand);
         return;
       }
 
       if (file.type !== "executable") {
         pushEntry(command, [`bash: ./${name}: No such file or directory`], promptAtCommand);
+        return;
+      }
+
+      const source = file.sourceFile ? fileMap.get(file.sourceFile) : null;
+      const sourceCode = source?.content || "";
+      const prompts = extractInteractivePrompts(sourceCode);
+      if (prompts.length > 0 && /scanf\s*\(/.test(sourceCode)) {
+        pushEntry(command, [`Program menunggu input...`, prompts[0]], promptAtCommand);
+        setInteractiveRun({ mode: "c", prompts, answers: [], sourceCode });
         return;
       }
 
@@ -780,21 +1063,25 @@ export default function Home() {
   };
 
   const activeSubmissionFile = activeFilePath ? fileMap.get(activeFilePath) ?? null : null;
+  const isSubmitLocked = submitted || timeExpired;
+  const timerHours = Math.floor(remainingSeconds / 3600)
+    .toString()
+    .padStart(2, "0");
+  const timerMinutes = Math.floor((remainingSeconds % 3600) / 60)
+    .toString()
+    .padStart(2, "0");
+  const timerSeconds = (remainingSeconds % 60).toString().padStart(2, "0");
+  const timerText = `${timerHours}:${timerMinutes}:${timerSeconds}`;
+  const timerBadgeClass = timeExpired
+    ? "border-red-200 bg-red-50 text-red-700"
+    : remainingSeconds <= 5 * 60
+      ? "border-red-200 bg-red-50 text-red-700"
+      : remainingSeconds <= 15 * 60
+        ? "border-amber-200 bg-amber-50 text-amber-700"
+        : "border-sky-200 bg-sky-50 text-sky-700";
 
   if (authLoading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-zinc-200 p-6 text-zinc-900">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-10 w-10 animate-spin rounded-full border-4 border-zinc-400 border-t-zinc-700" />
-          <div className="flex items-center gap-1">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600 [animation-delay:-0.2s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600 [animation-delay:-0.1s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-zinc-600" />
-          </div>
-          <p className="text-sm text-zinc-700">Memuat sesi...</p>
-        </div>
-      </main>
-    );
+    return <AppLoadingScreen title="Memuat Dashboard Praktikum" subtitle="Menyiapkan terminal dan sesi pengguna..." />;
   }
 
   if (authError) {
@@ -805,46 +1092,193 @@ export default function Home() {
     return null;
   }
 
+  const showExamActions = !(user.role === "admin" && allowAdminTerminal);
+  const hasQuestionPdf = Boolean(user.questionPdfUrl);
+
   return (
-    <main ref={rootRef} className="min-h-screen bg-zinc-200 px-3 py-5 text-zinc-900 md:px-6">
-      <div className="mx-auto w-full max-w-6xl space-y-3">
-        <div data-animate="home-shell" className="flex items-center justify-between gap-3 rounded-xl border border-zinc-300 bg-white p-3 shadow-sm">
-          <h1 className="text-lg font-semibold text-zinc-900 md:text-xl">Ujian Praktikum Sistem Operasi</h1>
-          {user.role === "admin" ? (
-            <button
-              type="button"
-              onClick={() => setShowHelpPanel((prev) => !prev)}
-              className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-600"
-            >
-              {showHelpPanel ? "Sembunyikan Bantuan" : "Tampilkan Bantuan"}
-            </button>
-          ) : null}
+    <main ref={rootRef} className="h-screen overflow-hidden bg-[linear-gradient(160deg,#ecebe7_0%,#f4f3f1_45%,#ebe9e5_100%)] px-3 py-4 text-zinc-900 md:px-6">
+      <div className={`mx-auto flex h-full w-full max-w-[1600px] flex-col space-y-3 ${showExamActions ? "pb-24" : ""}`}>
+        <div
+          data-animate="home-shell"
+          className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/90 bg-white/90 p-3 shadow-[0_14px_35px_-20px_rgba(0,0,0,0.45)] backdrop-blur transition"
+        >
+          <h1 className="text-lg font-semibold tracking-tight text-zinc-900 md:text-2xl">Ujian Praktikum Sistem Operasi</h1>
+          <div className="flex items-center gap-2">
+            {showExamActions ? (
+              <span
+                className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold tracking-[0.12em] md:text-sm ${
+                  submitted
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : timerBadgeClass
+                }`}
+                title={submitted ? "Status ujian" : "Sisa waktu ujian"}
+              >
+                {submitted ? "Sudah Disubmit" : timeExpired ? "00:00:00" : timerText}
+              </span>
+            ) : null}
+            {user.role === "admin" && !allowAdminTerminal ? (
+              <button
+                type="button"
+                onClick={() => setShowHelpPanel((prev) => !prev)}
+                className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-zinc-600"
+              >
+                {showHelpPanel ? "Sembunyikan Bantuan" : "Tampilkan Bantuan"}
+              </button>
+            ) : null}
+            {showExamActions && !showPdfPreview && hasQuestionPdf ? (
+              <button
+                type="button"
+                onClick={() => setShowPdfPreview(true)}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-indigo-500"
+              >
+                Lihat Soal
+              </button>
+            ) : null}
+            {showExamActions ? (
+              <button
+                type="button"
+                onClick={() => setConfirmAction("logout")}
+                className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-zinc-700"
+              >
+                Logout
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {user.role === "admin" && showHelpPanel ? <HelpPanel /> : null}
 
-        <div data-animate="home-shell">
-          <Terminal
-          entries={entries}
-          inputValue={terminalInput}
-          onInputChange={setTerminalInput}
-          onSubmit={runCommand}
-          focusSignal={focusSignal}
-          prompt={currentPrompt}
-          username={user.username}
-          onSubmitExam={() => {
-            if (!activeSubmissionFile) {
-              setToast("Tidak ada file aktif untuk disubmit.");
-              return;
-            }
-            setStudentNameInput("");
-            setShowNameModal(true);
-          }}
-          onLogout={logout}
-          submitted={submitted}
-          />
+        <div data-animate="home-shell" className="flex min-h-0 flex-1 flex-col space-y-3">
+          {showExamActions ? (
+            <div className="lg:hidden">
+              {hasQuestionPdf ? (
+                <button
+                  type="button"
+                  onClick={() => setShowMobilePdfModal(true)}
+                  className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                >
+                  Lihat Soal
+                </button>
+              ) : (
+                <p className="text-sm text-zinc-600">Soal PDF belum tersedia. Silakan hubungi admin.</p>
+              )}
+            </div>
+          ) : null}
+
+          <div className="flex min-h-0 flex-1 gap-3 transition-all duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)]">
+            {showExamActions ? (
+              <aside
+                className={`hidden min-h-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white/95 shadow-[0_16px_36px_-24px_rgba(0,0,0,0.5)] transition-[width,opacity,transform] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:flex lg:flex-col ${
+                  showPdfPreview
+                    ? "w-[40%] translate-x-0 opacity-100"
+                    : "pointer-events-none w-0 -translate-x-6 opacity-0"
+                }`}
+              >
+                <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-100 px-3 py-2.5">
+                  <p className="text-sm font-semibold text-zinc-800">Preview Soal</p>
+                  <div className="flex gap-2">
+                    <a
+                      href={hasQuestionPdf ? user.questionPdfUrl ?? "#" : "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-disabled={!hasQuestionPdf}
+                      className={`rounded-lg px-2 py-1 text-xs font-semibold transition ${
+                        hasQuestionPdf
+                          ? "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                          : "cursor-not-allowed bg-zinc-200 text-zinc-400"
+                      }`}
+                    >
+                      Buka PDF
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setShowPdfPreview(false)}
+                      className="rounded-lg bg-zinc-700 px-2 py-1 text-xs font-semibold text-white transition hover:bg-zinc-600"
+                    >
+                      Sembunyikan
+                    </button>
+                  </div>
+                </div>
+                <div className="relative h-full min-h-0 overflow-auto bg-zinc-50 p-2">
+                  {hasQuestionPdf ? (
+                    <>
+                      {pdfLoadingDesktop ? (
+                        <div className="absolute inset-2 animate-pulse rounded-xl border border-zinc-200 bg-white" />
+                      ) : null}
+                      <iframe
+                        title="Preview Soal Praktikum"
+                        src={user.questionPdfUrl ?? ""}
+                        key={user.questionPdfUrl ?? "no-pdf-desktop"}
+                        onLoad={() => setPdfLoadingDesktop(false)}
+                        className="h-full min-h-[74vh] w-full rounded-xl border border-zinc-300 bg-white opacity-100"
+                        style={{ opacity: 1, filter: "none" }}
+                      />
+                    </>
+                  ) : (
+                    <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white/80 p-4 text-center">
+                      <div className="h-10 w-8 rounded border-2 border-zinc-300 bg-zinc-100" />
+                      <p className="text-sm font-semibold text-zinc-700">Soal belum tersedia</p>
+                      <p className="text-xs text-zinc-500">Soal PDF belum tersedia. Silakan hubungi admin.</p>
+                    </div>
+                  )}
+                </div>
+              </aside>
+            ) : null}
+
+            <div
+              className={`min-h-0 flex-1 transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                showExamActions && !showPdfPreview ? "mx-auto w-full max-w-[1180px]" : ""
+              }`}
+            >
+              <Terminal
+                entries={entries}
+                inputValue={terminalInput}
+                onInputChange={setTerminalInput}
+                onSubmit={runCommand}
+                focusSignal={focusSignal}
+                prompt={currentPrompt}
+                username={user.username}
+                backButtonLabel={user.role === "admin" && allowAdminTerminal ? "Kembali" : undefined}
+                onBack={
+                  user.role === "admin" && allowAdminTerminal
+                    ? () => router.push(adminReturnPath)
+                    : undefined
+                }
+                stdinMode={Boolean(interactiveRun)}
+                readOnly={showExamActions && isSubmitLocked}
+              />
+            </div>
+          </div>
         </div>
       </div>
+
+      {showExamActions ? (
+        <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-200 bg-white/95 shadow-[0_-8px_24px_-16px_rgba(0,0,0,0.4)] backdrop-blur">
+          <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-3 px-3 py-3 md:px-6">
+            <p className="text-xs text-zinc-600 md:text-sm">
+              {submitted
+                ? "Ujian sudah disubmit. Jawaban tidak dapat diubah lagi."
+                : timeExpired
+                  ? "Waktu ujian habis. Jawaban tidak dapat diubah lagi."
+                  : "Pastikan semua jawaban sudah selesai sebelum submit."}
+            </p>
+            {showExamActions && isExamPaused && !submitted ? (
+              <p className="text-xs text-amber-700 md:text-sm">Ujian sedang dijeda oleh admin.</p>
+            ) : null}
+            {showExamActions && !isExamPaused && isIndividualPaused && !submitted ? (
+              <p className="text-xs text-amber-700 md:text-sm">Timer kamu dijeda oleh admin.</p>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setConfirmAction("submit")}
+              disabled={isSubmitLocked}
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitted ? "Sudah Disubmit" : timeExpired ? "Waktu Habis" : "Submit Ujian"}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <EditorModal
         isOpen={editorOpen}
@@ -912,12 +1346,135 @@ export default function Home() {
         </div>
       ) : null}
 
+      {confirmAction ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-4">
+            <h2 className="text-lg font-semibold text-zinc-100">
+              {confirmAction === "logout" ? "Yakin ingin logout?" : "Submit Ujian?"}
+            </h2>
+            <p className="mt-2 text-sm text-zinc-300">
+              {confirmAction === "logout"
+                ? "Yakin ingin logout? Pastikan jawaban sudah tersimpan."
+                : "Setelah ujian disubmit, jawaban tidak dapat diubah lagi."}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmAction(null)}
+                className="rounded-md bg-zinc-700 px-3 py-2 text-sm text-zinc-100"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const action = confirmAction;
+                  setConfirmAction(null);
+
+                  if (action === "logout") {
+                    void logout();
+                    return;
+                  }
+
+                  if (!activeSubmissionFile) {
+                    setToast("Tidak ada file aktif untuk disubmit.");
+                    return;
+                  }
+                  if (timeExpired) {
+                    setToast("Waktu ujian habis. Submit dinonaktifkan.");
+                    return;
+                  }
+
+                  setStudentNameInput("");
+                  setShowNameModal(true);
+                }}
+                className={`rounded-md px-3 py-2 text-sm text-white ${
+                  confirmAction === "logout"
+                    ? "bg-red-600 hover:bg-red-500"
+                    : "bg-blue-600 hover:bg-blue-500"
+                }`}
+              >
+                {confirmAction === "logout" ? "Ya, Logout" : "Ya, Submit Ujian"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {toast ? (
         <div className="fixed bottom-4 right-4 rounded-md bg-zinc-800 px-4 py-2 text-sm text-zinc-100 shadow-lg">
           {toast}
         </div>
       ) : null}
+
+      {showMobilePdfModal && showExamActions ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 lg:hidden">
+          <div className="flex h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-zinc-700 px-3 py-2.5">
+              <h2 className="text-sm font-semibold text-zinc-100">Preview Soal</h2>
+              <div className="flex gap-2">
+                <a
+                  href={hasQuestionPdf ? user.questionPdfUrl ?? "#" : "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-disabled={!hasQuestionPdf}
+                  className={`rounded-lg px-2 py-1 text-xs font-semibold ${
+                    hasQuestionPdf ? "bg-blue-100 text-blue-700" : "bg-zinc-300 text-zinc-500"
+                  }`}
+                >
+                  Buka PDF
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowMobilePdfModal(false)}
+                  className="rounded-lg bg-zinc-700 px-2 py-1 text-xs font-semibold text-zinc-100"
+                >
+                  Tutup
+                </button>
+              </div>
+            </div>
+            <div className="relative flex-1 overflow-auto bg-zinc-50 p-2">
+              {hasQuestionPdf ? (
+                <>
+                  {pdfLoadingMobile ? (
+                    <div className="absolute inset-2 animate-pulse rounded-xl border border-zinc-200 bg-white" />
+                  ) : null}
+                  <iframe
+                    title="Preview Soal Praktikum Mobile"
+                    src={user.questionPdfUrl ?? ""}
+                    key={user.questionPdfUrl ?? "no-pdf-mobile"}
+                    onLoad={() => setPdfLoadingMobile(false)}
+                    className="h-full min-h-[78vh] w-full rounded-xl border border-zinc-300 bg-white opacity-100"
+                    style={{ opacity: 1, filter: "none" }}
+                  />
+                </>
+              ) : (
+                <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white/80 p-4 text-center">
+                  <div className="h-10 w-8 rounded border-2 border-zinc-300 bg-zinc-100" />
+                  <p className="text-sm font-semibold text-zinc-700">Soal belum tersedia</p>
+                  <p className="text-xs text-zinc-500">Soal PDF belum tersedia. Silakan hubungi admin.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <AppLoadingScreen
+          title="Memuat Dashboard Praktikum"
+          subtitle="Menyiapkan terminal dan sesi pengguna..."
+        />
+      }
+    >
+      <HomeContent />
+    </Suspense>
   );
 }
 

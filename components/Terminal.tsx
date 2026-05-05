@@ -11,9 +11,10 @@ type TerminalProps = {
   focusSignal: number;
   prompt: string;
   username: string;
-  onSubmitExam: () => void;
-  onLogout: () => void;
-  submitted: boolean;
+  backButtonLabel?: string;
+  onBack?: () => void;
+  stdinMode?: boolean;
+  readOnly?: boolean;
 };
 
 export function Terminal({
@@ -24,9 +25,10 @@ export function Terminal({
   focusSignal,
   prompt,
   username,
-  onSubmitExam,
-  onLogout,
-  submitted,
+  backButtonLabel,
+  onBack,
+  stdinMode = false,
+  readOnly = false,
 }: TerminalProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -51,12 +53,18 @@ export function Terminal({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (readOnly) {
+      return;
+    }
     onSubmit();
     focusTerminal();
   };
 
   const handleTerminalKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (document.activeElement === inputRef.current) {
+      return;
+    }
+    if (readOnly) {
       return;
     }
 
@@ -75,29 +83,31 @@ export function Terminal({
   };
 
   return (
-    <section className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl">
-      <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-800/80 px-4 py-2">
+    <section className="overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900 shadow-[0_18px_40px_-22px_rgba(0,0,0,0.7)]">
+      <div className="flex items-center justify-between border-b border-zinc-700/80 bg-zinc-800/90 px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span className="h-3 w-3 rounded-full bg-red-500" />
           <span className="h-3 w-3 rounded-full bg-yellow-400" />
           <span className="h-3 w-3 rounded-full bg-green-500" />
         </div>
-        <span className="text-xs text-zinc-300">{username}@ubuntu: ~</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-zinc-300">{username}@ubuntu: ~</span>
+          {readOnly ? (
+            <span className="rounded-full bg-blue-600/20 px-2 py-0.5 text-[10px] font-semibold text-blue-300">
+              Sudah Disubmit
+            </span>
+          ) : null}
+        </div>
         <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={onSubmitExam}
-            className="rounded-md bg-blue-600 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-blue-500"
-          >
-            {submitted ? "Submitted" : "Submit Ujian"}
-          </button>
-          <button
-            type="button"
-            onClick={onLogout}
-            className="rounded-md bg-zinc-700 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-600"
-          >
-            Logout
-          </button>
+          {onBack && backButtonLabel ? (
+            <button
+              type="button"
+              onClick={onBack}
+              className="rounded-md bg-zinc-700 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-600"
+            >
+              {backButtonLabel}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -111,7 +121,7 @@ export function Terminal({
           }
         }}
         onKeyDown={handleTerminalKeyDown}
-        className="h-[72vh] overflow-y-auto bg-black p-4 font-mono text-sm text-zinc-100 outline-none md:h-[76vh]"
+        className="h-[62vh] min-h-[420px] overflow-y-auto bg-black p-4 font-mono text-sm text-zinc-100 outline-none md:h-[calc(100vh-260px)]"
       >
         {entries.length === 0 ? (
           <p className="text-zinc-400">Ketik `help` untuk melihat command yang tersedia.</p>
@@ -135,10 +145,16 @@ export function Terminal({
         ))}
 
         <form onSubmit={handleSubmit} className="mt-2 flex items-center gap-2">
-          <label htmlFor="terminal-input" className="text-zinc-100">
-            <span className="text-green-400">{username}@ubuntu</span>
-            {prompt.replace(`${username}@ubuntu`, "")}
-          </label>
+          {stdinMode ? (
+            <label htmlFor="terminal-input" className="text-yellow-300">
+              stdin&gt;
+            </label>
+          ) : (
+            <label htmlFor="terminal-input" className="text-zinc-100">
+              <span className="text-green-400">{username}@ubuntu</span>
+              {prompt.replace(`${username}@ubuntu`, "")}
+            </label>
+          )}
           <input
             id="terminal-input"
             ref={inputRef}
@@ -147,8 +163,16 @@ export function Terminal({
             onChange={(event) => onInputChange(event.target.value)}
             autoComplete="off"
             spellCheck={false}
+            readOnly={readOnly}
+            disabled={readOnly}
           />
         </form>
+        {readOnly ? (
+          <p className="mt-1 text-xs text-blue-300">Mode read only aktif. Ujian sudah disubmit.</p>
+        ) : null}
+        {stdinMode ? (
+          <p className="mt-1 text-xs text-yellow-300">Mode input program aktif. Ketik jawaban lalu Enter.</p>
+        ) : null}
         <div ref={endRef} />
       </div>
     </section>

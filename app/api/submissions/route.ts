@@ -1,6 +1,8 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getOrCreateExamSession, markExamSubmitted } from "@/lib/exam-timer";
+import { getSupabaseAdmin } from "@/lib/supabase-server";
 
 export async function POST(req: Request) {
   try {
@@ -10,6 +12,26 @@ export async function POST(req: Request) {
     }
     if (sessionUser.role !== "student") {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const supabase = getSupabaseAdmin();
+    const { data: currentUser } = await supabase
+      .from("users")
+      .select("id, username, role")
+      .eq("username", sessionUser.username)
+      .maybeSingle();
+
+    if (!currentUser || currentUser.role !== "student") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const examSession = await getOrCreateExamSession({
+      userId: currentUser.id,
+      username: currentUser.username,
+    });
+
+    if (examSession.status === "timeout") {
+      return NextResponse.json({ error: "Waktu ujian habis. Submit dinonaktifkan." }, { status: 400 });
     }
 
     const body = await req.json().catch(() => null);
@@ -81,6 +103,8 @@ export async function POST(req: Request) {
       console.error("SUPABASE INSERT ERROR:", error);
       return NextResponse.json({ error: error.message, detail: error }, { status: 500 });
     }
+
+    await markExamSubmitted(currentUser.id);
 
     return NextResponse.json({ message: "Jawaban berhasil disubmit", data });
   } catch (error) {
