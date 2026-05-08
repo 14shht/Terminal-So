@@ -667,9 +667,10 @@ export default function AdminPage() {
             {usersLoading ? (
               <p className="mt-3 text-sm text-zinc-500">Memuat data user...</p>
             ) : (
-              <div className="mt-4 overflow-x-auto overflow-y-hidden rounded-lg border border-zinc-200">
+              <div className="mt-4 overflow-hidden rounded-lg border border-zinc-200">
+                <div className="max-h-[55vh] overflow-x-auto overflow-y-auto">
                 <table className="w-full text-left text-sm">
-                  <thead className="bg-zinc-100 text-zinc-700">
+                  <thead className="sticky top-0 z-10 bg-zinc-100 text-zinc-700">
                     <tr>
                       <th className="px-3 py-2">Username</th>
                       <th className="px-3 py-2">Role</th>
@@ -953,6 +954,7 @@ export default function AdminPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             )}
           </section>
