@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 type GlobalExamStatus = "NOT_STARTED" | "SCHEDULED" | "RUNNING" | "PAUSED" | "ENDED";
 
@@ -45,6 +46,15 @@ const formatCountdown = (seconds: number) => {
   return `${hh}:${mm}:${ss}`;
 };
 
+const actionPendingLabel: Record<string, string> = {
+  schedule: "Menyimpan...",
+  reset: "Mereset...",
+  start: "Memulai...",
+  pause: "Mem-pause...",
+  resume: "Melanjutkan...",
+  end: "Mengakhiri...",
+};
+
 type Props = {
   onToast: (message: string, tone?: "success" | "error") => void;
 };
@@ -58,6 +68,7 @@ export function GlobalExamControlPanel({ onToast }: Props) {
   const [isEditingSchedule, setIsEditingSchedule] = useState(false);
   const [liveRemainingSeconds, setLiveRemainingSeconds] = useState(0);
   const [liveServerTime, setLiveServerTime] = useState<Date | null>(null);
+  const [confirmAction, setConfirmAction] = useState<"reset" | "end" | null>(null);
   const toastRef = useRef(onToast);
 
   useEffect(() => {
@@ -119,29 +130,34 @@ export function GlobalExamControlPanel({ onToast }: Props) {
   }, [session, liveRemainingSeconds]);
 
   const runAction = async (action: string, endpoint: string, body?: Record<string, unknown>) => {
-    setBusyAction(action);
-    const response = await fetch(endpoint, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const data = await response.json().catch(() => ({}));
-    setBusyAction("");
-    if (!response.ok) {
-      onToast(data.error || "Aksi gagal dijalankan.", "error");
-      return;
+    try {
+      setBusyAction(action);
+      const response = await fetch(endpoint, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        onToast(data.error || "Aksi gagal dijalankan.", "error");
+        return;
+      }
+      setSession((prev) => ({
+        ...(prev ?? {}),
+        ...(data.examSession ?? {}),
+        serverTime: new Date().toISOString(),
+        remainingSeconds: data.examSession?.remainingSeconds ?? prev?.remainingSeconds ?? 0,
+      }));
+      setLiveRemainingSeconds(Math.max(0, Number(data.examSession?.remainingSeconds ?? 0)));
+      setLiveServerTime(new Date());
+      setIsEditingSchedule(false);
+      toastRef.current("Aksi kontrol ujian berhasil disimpan.");
+      await loadSession();
+    } catch {
+      onToast("Terjadi gangguan jaringan. Coba lagi.", "error");
+    } finally {
+      setBusyAction("");
     }
-    setSession((prev) => ({
-      ...(prev ?? {}),
-      ...(data.examSession ?? {}),
-      serverTime: new Date().toISOString(),
-      remainingSeconds: data.examSession?.remainingSeconds ?? prev?.remainingSeconds ?? 0,
-    }));
-    setLiveRemainingSeconds(Math.max(0, Number(data.examSession?.remainingSeconds ?? 0)));
-    setLiveServerTime(new Date());
-    setIsEditingSchedule(false);
-    toastRef.current("Aksi kontrol ujian berhasil disimpan.");
-    await loadSession();
   };
 
   if (loading) {
@@ -237,18 +253,17 @@ export function GlobalExamControlPanel({ onToast }: Props) {
             disabled={busyAction.length > 0}
             className="h-8 rounded-md bg-indigo-600 px-3 text-xs font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-60"
           >
-            Simpan Jadwal
+            {busyAction === "schedule" ? actionPendingLabel.schedule : "Simpan Jadwal"}
           </button>
           <button
             type="button"
             onClick={() => {
-              if (!window.confirm("Yakin ingin reset timer ujian global?")) return;
-              void runAction("reset", "/api/exam-session/reset");
+              setConfirmAction("reset");
             }}
             disabled={busyAction.length > 0}
             className="h-8 rounded-md bg-zinc-700 px-3 text-xs font-semibold text-white transition hover:bg-zinc-600 disabled:opacity-60"
           >
-            Reset Timer
+            {busyAction === "reset" ? actionPendingLabel.reset : "Reset Timer"}
           </button>
           <button
             type="button"
@@ -256,7 +271,7 @@ export function GlobalExamControlPanel({ onToast }: Props) {
             disabled={busyAction.length > 0 || session?.status === "RUNNING"}
             className="h-8 rounded-md bg-emerald-600 px-3 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-60"
           >
-            Mulai Sekarang
+            {busyAction === "start" ? actionPendingLabel.start : "Mulai Sekarang"}
           </button>
           <button
             type="button"
@@ -264,7 +279,7 @@ export function GlobalExamControlPanel({ onToast }: Props) {
             disabled={busyAction.length > 0 || session?.status !== "RUNNING"}
             className="h-8 rounded-md bg-amber-500 px-3 text-xs font-semibold text-white transition hover:bg-amber-400 disabled:opacity-60"
           >
-            Pause
+            {busyAction === "pause" ? actionPendingLabel.pause : "Pause"}
           </button>
           <button
             type="button"
@@ -272,21 +287,52 @@ export function GlobalExamControlPanel({ onToast }: Props) {
             disabled={busyAction.length > 0 || session?.status !== "PAUSED"}
             className="h-8 rounded-md bg-violet-600 px-3 text-xs font-semibold text-white transition hover:bg-violet-500 disabled:opacity-60"
           >
-            Lanjutkan
+            {busyAction === "resume" ? actionPendingLabel.resume : "Lanjutkan"}
           </button>
           <button
             type="button"
             onClick={() => {
-              if (!window.confirm("Yakin ingin mengakhiri ujian global sekarang?")) return;
-              void runAction("end", "/api/exam-session/end");
+              setConfirmAction("end");
             }}
             disabled={busyAction.length > 0 || session?.status === "ENDED"}
             className="h-8 rounded-md bg-rose-600 px-3 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-60"
           >
-            Akhiri Ujian
+            {busyAction === "end" ? actionPendingLabel.end : "Akhiri Ujian"}
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmAction === "reset"}
+        onOpenChange={(open) => !open && setConfirmAction(null)}
+        title="Reset Timer"
+        description="Yakin ingin reset timer ujian global?"
+        confirmLabel="Reset Timer"
+        destructive
+        loading={busyAction === "reset"}
+        onConfirm={() => {
+          void (async () => {
+            await runAction("reset", "/api/exam-session/reset");
+            setConfirmAction(null);
+          })();
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmAction === "end"}
+        onOpenChange={(open) => !open && setConfirmAction(null)}
+        title="Akhiri Ujian"
+        description="Yakin ingin mengakhiri ujian global sekarang?"
+        confirmLabel="Akhiri Ujian"
+        destructive
+        loading={busyAction === "end"}
+        onConfirm={() => {
+          void (async () => {
+            await runAction("end", "/api/exam-session/end");
+            setConfirmAction(null);
+          })();
+        }}
+      />
     </section>
   );
 }
