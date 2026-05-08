@@ -15,7 +15,7 @@ export async function POST(request: Request) {
   const supabase = getSupabaseAdmin();
   const { data: user, error } = await supabase
     .from("users")
-    .select("username, role, password_hash")
+    .select("username, role, password_hash, is_active")
     .eq("username", username)
     .maybeSingle();
 
@@ -26,6 +26,12 @@ export async function POST(request: Request) {
 
   if (!user || !verifyPassword(password, user.password_hash)) {
     return NextResponse.json({ message: "Username atau password salah." }, { status: 401 });
+  }
+  if (!user.is_active) {
+    return NextResponse.json(
+      { message: "Akun Anda sedang dinonaktifkan. Hubungi admin." },
+      { status: 403 },
+    );
   }
 
   const sessionUser = {

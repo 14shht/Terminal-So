@@ -12,6 +12,7 @@ export type ExamSessionInfo = {
   durationMinutes: number;
   expiresAt: string;
   remainingSeconds: number;
+  endedAt: string | null;
   isPaused: boolean;
   isPausedIndividual: boolean;
   now: string;
@@ -47,21 +48,11 @@ const normalizeDuration = (value: unknown) => {
   return Math.min(MAX_EXAM_DURATION_MINUTES, Math.max(MIN_EXAM_DURATION_MINUTES, Math.floor(value)));
 };
 
-const getSubmissionStatus = async (username: string) => {
-  const supabase = getSupabaseAdmin();
-  const { data } = await supabase
-    .from("submissions")
-    .select("id")
-    .eq("student_username", username)
-    .limit(1);
-  return Boolean(data && data.length > 0);
-};
-
 export const getOrCreateExamSession = async (params: {
   userId: string;
   username: string;
 }): Promise<ExamSessionInfo> => {
-  const { userId, username } = params;
+  const { userId } = params;
   const supabase = getSupabaseAdmin();
   const now = new Date();
   const settings = await getSettingsRow();
@@ -76,7 +67,7 @@ export const getOrCreateExamSession = async (params: {
     .eq("user_id", userId)
     .maybeSingle();
 
-  const hasSubmitted = await getSubmissionStatus(username);
+  const hasSubmitted = Boolean(existing?.ended_at) && existing?.ended_reason === "submitted";
   const durationMinutes = normalizeDuration(existing?.duration_minutes ?? settings?.duration_minutes);
   const startedAt = existing?.started_at ?? now.toISOString();
   const isIndividuallyPaused = Boolean(existing?.is_paused);
@@ -97,8 +88,8 @@ export const getOrCreateExamSession = async (params: {
       duration_minutes: durationMinutes,
       remaining_seconds: initialRemaining,
       is_paused: false,
-      ended_at: hasSubmitted || isTimedOut ? now.toISOString() : null,
-      ended_reason: hasSubmitted ? "submitted" : isTimedOut ? "timeout" : null,
+      ended_at: isTimedOut ? now.toISOString() : null,
+      ended_reason: isTimedOut ? "timeout" : null,
       updated_at: nowIso,
     });
   } else if (!existing.ended_at) {
@@ -107,10 +98,7 @@ export const getOrCreateExamSession = async (params: {
       remaining_seconds: remainingSeconds,
       updated_at: nowIso,
     };
-    if (hasSubmitted) {
-      patch.ended_at = nowIso;
-      patch.ended_reason = "submitted";
-    } else if (isTimedOut) {
+    if (isTimedOut) {
       patch.ended_at = nowIso;
       patch.ended_reason = "timeout";
     }
@@ -132,6 +120,7 @@ export const getOrCreateExamSession = async (params: {
     durationMinutes,
     expiresAt: expiresAtDate.toISOString(),
     remainingSeconds,
+    endedAt: existing?.ended_at ?? (hasSubmitted || isTimedOut ? nowIso : null),
     isPaused: isPausedByAdmin,
     isPausedIndividual: isIndividuallyPaused,
     now: now.toISOString(),
@@ -272,38 +261,92 @@ export const addStudentExamTime = async (userId: string, minutesToAdd: number) =
   const secondsToAdd = Math.max(0, Math.floor(minutesToAdd * 60));
   if (secondsToAdd <= 0) return;
   const supabase = getSupabaseAdmin();
-  const nowIso = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
   const settings = await getExamSettings();
+  const settingsRow = await getSettingsRow();
   const { data } = await supabase
     .from("exam_sessions")
-    .select("remaining_seconds")
+    .select("started_at, duration_minutes, remaining_seconds, is_paused, updated_at")
     .eq("user_id", userId)
     .maybeSingle();
-  const current = typeof data?.remaining_seconds === "number" ? Math.max(0, data.remaining_seconds) : 0;
+  if (data) {
+    const durationMinutes = normalizeDuration(data.duration_minutes ?? settings.durationMinutes);
+    const fallbackRemaining = Math.max(0, durationMinutes * 60);
+    const storedRemaining =
+      typeof data.remaining_seconds === "number" ? Math.max(0, data.remaining_seconds) : fallbackRemaining;
+    const referenceMs = data.updated_at
+      ? new Date(data.updated_at).getTime()
+      : data.started_at
+        ? new Date(data.started_at).getTime()
+        : now.getTime();
+    const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - referenceMs) / 1000));
+    const effectivePaused = Boolean(settingsRow?.is_paused) || Boolean(data.is_paused);
+    const currentRemaining = effectivePaused
+      ? storedRemaining
+      : Math.max(0, storedRemaining - elapsedSeconds);
+
+    await supabase
+      .from("exam_sessions")
+      .update({
+        remaining_seconds: currentRemaining + secondsToAdd,
+        ended_at: null,
+        ended_reason: null,
+        updated_at: nowIso,
+      })
+      .eq("user_id", userId);
+    return;
+  }
+
+  await supabase.from("exam_sessions").insert({
+    user_id: userId,
+    started_at: nowIso,
+    duration_minutes: settings.durationMinutes,
+    remaining_seconds: settings.durationMinutes * 60 + secondsToAdd,
+    is_paused: false,
+    ended_at: null,
+    ended_reason: null,
+    updated_at: nowIso,
+  });
+};
+
+export const setStudentExamPause = async (userId: string, paused: boolean) => {
+  const supabase = getSupabaseAdmin();
+  const nowIso = new Date().toISOString();
+  const settings = await getExamSettings();
+  const { data: existing } = await supabase
+    .from("exam_sessions")
+    .select("user_id, started_at, duration_minutes, remaining_seconds, ended_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (existing && !existing.ended_at) {
+    await supabase
+      .from("exam_sessions")
+      .update({ is_paused: paused, updated_at: nowIso })
+      .eq("user_id", userId)
+      .is("ended_at", null);
+    return;
+  }
+
   await supabase
     .from("exam_sessions")
     .upsert(
       {
         user_id: userId,
-        started_at: nowIso,
-        duration_minutes: settings.durationMinutes,
-        remaining_seconds: current + secondsToAdd,
-        is_paused: false,
+        started_at: existing?.started_at ?? nowIso,
+        duration_minutes: existing?.duration_minutes ?? settings.durationMinutes,
+        remaining_seconds:
+          typeof existing?.remaining_seconds === "number"
+            ? Math.max(0, existing.remaining_seconds)
+            : settings.durationMinutes * 60,
+        is_paused: paused,
         ended_at: null,
         ended_reason: null,
         updated_at: nowIso,
       },
       { onConflict: "user_id" },
     );
-};
-
-export const setStudentExamPause = async (userId: string, paused: boolean) => {
-  const supabase = getSupabaseAdmin();
-  await supabase
-    .from("exam_sessions")
-    .update({ is_paused: paused, updated_at: new Date().toISOString() })
-    .eq("user_id", userId)
-    .is("ended_at", null);
 };
 
 export const resetStudentExamTimer = async (userId: string) => {
@@ -325,6 +368,37 @@ export const resetStudentExamTimer = async (userId: string) => {
       },
       { onConflict: "user_id" },
     );
+};
+
+export const forceFinishStudentExam = async (userId: string) => {
+  const supabase = getSupabaseAdmin();
+  const nowIso = new Date().toISOString();
+  const settings = await getExamSettings();
+  const { data: existing } = await supabase
+    .from("exam_sessions")
+    .select("started_at, duration_minutes")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  await supabase
+    .from("exam_sessions")
+    .upsert(
+      {
+        user_id: userId,
+        started_at: existing?.started_at ?? nowIso,
+        duration_minutes: existing?.duration_minutes ?? settings.durationMinutes,
+        remaining_seconds: 0,
+        is_paused: false,
+        ended_at: nowIso,
+        ended_reason: "submitted",
+        updated_at: nowIso,
+      },
+      { onConflict: "user_id" },
+    );
+};
+
+export const reopenStudentExam = async (userId: string) => {
+  await resetStudentExamTimer(userId);
 };
 
 export const listExamSessionMap = async () => {

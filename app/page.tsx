@@ -20,6 +20,9 @@ type PersistedState = {
   files: FileSystemItem[];
   entries: TerminalEntry[];
   submitted: boolean;
+  layoutMode?: "split" | "pdf" | "terminal";
+  monitoredStudentId?: string;
+  monitoredStudentUsername?: string;
 };
 
 type InteractiveRunState = {
@@ -27,21 +30,25 @@ type InteractiveRunState = {
   prompts: string[];
   answers: string[];
   sourceCode: string;
+  isMenuProgram?: boolean;
+  menuStage?: "choice" | "luas_panjang" | "luas_lebar" | "ganjil_angka" | "suhu_c";
+  menuData?: {
+    panjang?: number;
+  };
   shellVars?: string[];
   shellOutputTemplates?: string[];
 };
 
-type ExamSessionResponse = {
-  session: {
-    startedAt: string;
-    durationMinutes: number;
-    expiresAt: string;
-    remainingSeconds: number;
-    isPaused: boolean;
-    isPausedIndividual: boolean;
-    now: string;
-    status: "active" | "submitted" | "timeout";
-  };
+type GlobalExamStatusResponse = {
+  status: "NOT_STARTED" | "SCHEDULED" | "RUNNING" | "PAUSED" | "ENDED";
+  startTime: string | null;
+  endTime: string | null;
+  serverTime: string;
+  remainingSeconds: number;
+  isTerminalEnabled: boolean;
+  isPausedIndividual?: boolean;
+  isSubmitted: boolean;
+  submittedAt: string | null;
 };
 
 const createId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -200,9 +207,21 @@ const renderShellOutputWithInputs = (
     }
   }
 
+  const isShellControlLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return true;
+    if (/^(if|then|elif|else|fi|do|done|while|for|case|esac)\b/.test(trimmed)) return true;
+    if (/^(read)\b/.test(trimmed)) return true;
+    if (/^\[.*\]$/.test(trimmed)) return true;
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=\$\(\(.+\)\)$/.test(trimmed)) return true;
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=.+$/.test(trimmed) && !trimmed.startsWith("echo ")) return true;
+    return false;
+  };
+
   return tailOutputTemplates
     .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? ""))
     .map((line) => line.replace(/^echo\s+/, "").trim())
+    .filter((line) => !isShellControlLine(line))
     .filter((line) => line && !prompts.includes(line));
 };
 
@@ -210,6 +229,23 @@ const parsePrintfLines = (content: string): string[] => {
   const matches = [...content.matchAll(/printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g)];
   return matches.map((match) => match[1].replace(/\\n/g, "").trim()).filter(Boolean);
 };
+
+const isMenuProgramContent = (content: string) =>
+  /Masukkan pilihan/i.test(content) &&
+  /(Biodata|Luas|Ganjil|Genap|Konversi|Exit)/i.test(content);
+
+const buildMenuLines = (prompt = "Masukkan pilihan [1-5]:") => [
+  "==============================",
+  "        MENU PROGRAM C",
+  "==============================",
+  "1. Biodata",
+  "2. Luas Persegi Panjang",
+  "3. Cek Ganjil / Genap",
+  "4. Konversi Suhu",
+  "5. Exit",
+  "==============================",
+  prompt,
+];
 
 const extractInteractivePrompts = (content: string): string[] => {
   const lines = content.split("\n");
@@ -232,6 +268,28 @@ const extractInteractivePrompts = (content: string): string[] => {
 };
 
 const renderProgramOutputWithInputs = (content: string, answers: string[], prompts: string[]): string[] => {
+  const isMenuProgram = isMenuProgramContent(content);
+  if (isMenuProgram) {
+    const choice = (answers[0] ?? "").trim();
+    const menuLines = buildMenuLines();
+    if (choice === "1") {
+      return [...menuLines, "Nama : Praktikan", "NPM  : 12345678", "Kelas: TI-1A"];
+    }
+    if (choice === "2") {
+      return [...menuLines, "===== LUAS PERSEGI PANJANG =====", "Luas persegi panjang adalah: 1"];
+    }
+    if (choice === "3") {
+      return [...menuLines, "===== CEK GANJIL / GENAP =====", "10 adalah bilangan Genap"];
+    }
+    if (choice === "4") {
+      return [...menuLines, "===== KONVERSI SUHU =====", "10 derajat Celcius = 10 derajat Fahrenheit"];
+    }
+    if (choice === "5") {
+      return [...menuLines, "Program selesai. Terima kasih."];
+    }
+    return [...menuLines, "Pilihan tidak valid. Silakan pilih 1 sampai 5."];
+  }
+
   const lines = parsePrintfLines(content);
   const promptSet = new Set(prompts);
   let answerIndex = 0;
@@ -246,6 +304,15 @@ const renderProgramOutputWithInputs = (content: string, answers: string[], promp
     )
     .map((line) => line.trim())
     .filter((line) => line && !promptSet.has(line));
+};
+
+const buildMenuIntroLines = (content: string, prompt: string): string[] => {
+  const isMenuProgram = isMenuProgramContent(content);
+  if (!isMenuProgram) {
+    return ["Program menunggu input...", prompt];
+  }
+
+  return buildMenuLines(prompt);
 };
 
 const upsertFile = (files: FileSystemItem[], nextFile: FileSystemItem): FileSystemItem[] => {
@@ -269,6 +336,7 @@ const getInitialState = (username: string): PersistedState => {
       files: DEFAULT_FILES,
       entries: [],
       submitted: false,
+      layoutMode: "split",
     };
   }
 
@@ -280,6 +348,7 @@ const getInitialState = (username: string): PersistedState => {
       files: DEFAULT_FILES,
       entries: [],
       submitted: false,
+      layoutMode: "split",
     };
   }
 
@@ -314,7 +383,28 @@ const getInitialState = (username: string): PersistedState => {
           }))
       : [];
 
-    return { currentDir, folders, files, entries, submitted: Boolean(parsed.submitted) };
+    const layoutMode =
+      parsed.layoutMode === "split" || parsed.layoutMode === "pdf" || parsed.layoutMode === "terminal"
+        ? parsed.layoutMode
+        : "split";
+    const monitoredStudentId =
+      typeof parsed.monitoredStudentId === "string" && parsed.monitoredStudentId.trim()
+        ? parsed.monitoredStudentId.trim()
+        : "";
+    const monitoredStudentUsername =
+      typeof parsed.monitoredStudentUsername === "string" && parsed.monitoredStudentUsername.trim()
+        ? parsed.monitoredStudentUsername.trim()
+        : "";
+    return {
+      currentDir,
+      folders,
+      files,
+      entries,
+      submitted: Boolean(parsed.submitted),
+      layoutMode,
+      monitoredStudentId,
+      monitoredStudentUsername,
+    };
   } catch {
     window.localStorage.removeItem(getStorageKey(username));
     return {
@@ -323,6 +413,7 @@ const getInitialState = (username: string): PersistedState => {
       files: DEFAULT_FILES,
       entries: [],
       submitted: false,
+      layoutMode: "split",
     };
   }
 };
@@ -340,6 +431,9 @@ function HomeContent() {
   const [files, setFiles] = useState<FileSystemItem[]>(DEFAULT_FILES);
   const [entries, setEntries] = useState<TerminalEntry[]>([]);
   const [terminalInput, setTerminalInput] = useState("");
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [historyDraft, setHistoryDraft] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
   const [activeFilePath, setActiveFilePath] = useState("");
   const [editorContent, setEditorContent] = useState("");
@@ -350,24 +444,45 @@ function HomeContent() {
 
   const [showNameModal, setShowNameModal] = useState(false);
   const [studentNameInput, setStudentNameInput] = useState("");
+  const [submissionTargetPath, setSubmissionTargetPath] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [studentNameError, setStudentNameError] = useState("");
+  const [submissionFileError, setSubmissionFileError] = useState("");
   const [interactiveRun, setInteractiveRun] = useState<InteractiveRunState | null>(null);
   const [confirmAction, setConfirmAction] = useState<"submit" | "logout" | null>(null);
-  const [showPdfPreview, setShowPdfPreview] = useState(true);
+  const [layoutMode, setLayoutMode] = useState<"split" | "pdf" | "terminal">("split");
   const [showMobilePdfModal, setShowMobilePdfModal] = useState(false);
   const [pdfLoadingDesktop, setPdfLoadingDesktop] = useState(true);
   const [pdfLoadingMobile, setPdfLoadingMobile] = useState(true);
+  const [pdfLoadError, setPdfLoadError] = useState(false);
+  const [monitoredQuestionPdfUrl, setMonitoredQuestionPdfUrl] = useState<string | null>(null);
+  const [, setMonitoringDebugInfo] = useState<string>("");
+  const [storedMonitoredStudentId, setStoredMonitoredStudentId] = useState("");
+  const [storedMonitoredStudentUsername, setStoredMonitoredStudentUsername] = useState("");
   const [remainingSeconds, setRemainingSeconds] = useState<number>(90 * 60);
   const [timeExpired, setTimeExpired] = useState(false);
-  const [isExamPaused, setIsExamPaused] = useState(false);
+  const [globalExamStatus, setGlobalExamStatus] = useState<
+    "NOT_STARTED" | "SCHEDULED" | "RUNNING" | "PAUSED" | "ENDED"
+  >("NOT_STARTED");
+  const [examStartTime, setExamStartTime] = useState<string | null>(null);
+  const [isTerminalEnabled, setIsTerminalEnabled] = useState(false);
   const [isIndividualPaused, setIsIndividualPaused] = useState(false);
+  const [submittedAt, setSubmittedAt] = useState<string | null>(null);
+  const studentNameInputRef = useRef<HTMLInputElement | null>(null);
 
   const allowAdminTerminal = searchParams.get("admin_terminal") === "1";
   const adminReturnRaw = searchParams.get("admin_return");
+  const adminStudentId = searchParams.get("admin_student_id");
+  const adminStudentUsername = searchParams.get("admin_student_username");
   const adminReturnPath =
     adminReturnRaw && adminReturnRaw.startsWith("/admin/submissions/")
       ? adminReturnRaw
       : "/admin";
+  const effectiveAdminStudentId = adminStudentId || storedMonitoredStudentId;
+  const effectiveAdminStudentUsername = adminStudentUsername || storedMonitoredStudentUsername;
+  const adminSubmissionId = adminReturnPath.startsWith("/admin/submissions/")
+    ? adminReturnPath.replace("/admin/submissions/", "").split("?")[0]
+    : "";
 
   useEffect(() => {
     const loadMe = async () => {
@@ -397,6 +512,9 @@ function HomeContent() {
       setFiles(initial.files);
       setEntries(initial.entries);
       setSubmitted(initial.submitted);
+      setLayoutMode(initial.layoutMode ?? "split");
+      setStoredMonitoredStudentId(initial.monitoredStudentId ?? "");
+      setStoredMonitoredStudentUsername(initial.monitoredStudentUsername ?? "");
       setAuthLoading(false);
     };
 
@@ -409,39 +527,173 @@ function HomeContent() {
     }
 
     const loadSession = async () => {
-      const response = await fetch(`/api/exam/session?t=${Date.now()}`, {
+      const response = await fetch(`/api/exam-session/status?t=${Date.now()}`, {
         cache: "no-store",
         headers: { "cache-control": "no-store" },
       });
-      const data = (await response.json().catch(() => null)) as ExamSessionResponse | null;
-      if (!response.ok || !data?.session) {
+      const data = (await response.json().catch(() => null)) as GlobalExamStatusResponse | null;
+      if (!response.ok || !data) {
         return;
       }
 
-      setRemainingSeconds(Math.max(0, Number(data.session.remainingSeconds || 0)));
-      setIsExamPaused(Boolean(data.session.isPaused));
-      setIsIndividualPaused(Boolean(data.session.isPaused) ? false : Boolean(data.session.isPausedIndividual));
-      setTimeExpired(data.session.status === "timeout" || data.session.remainingSeconds <= 0);
-      if (data.session.status === "submitted") {
-        setSubmitted(true);
-      }
+      setGlobalExamStatus(data.status);
+      setExamStartTime(data.startTime ?? null);
+      setIsTerminalEnabled(Boolean(data.isTerminalEnabled));
+      setIsIndividualPaused(Boolean(data.isPausedIndividual));
+      setRemainingSeconds(Math.max(0, Number(data.remainingSeconds || 0)));
+      setTimeExpired(data.status === "ENDED");
+      setSubmitted(Boolean(data.isSubmitted));
+      setSubmittedAt(data.submittedAt ?? null);
     };
 
     void loadSession();
     const poll = setInterval(() => {
       void loadSession();
-    }, 1000);
+    }, 5000);
     return () => clearInterval(poll);
   }, [user]);
+
+  useEffect(() => {
+    if (!user || user.role !== "admin" || !allowAdminTerminal) {
+      return;
+    }
+
+    const loadMonitoredQuestion = async () => {
+      setPdfLoadError(false);
+      setPdfLoadingDesktop(true);
+      setPdfLoadingMobile(true);
+      setMonitoringDebugInfo("Memulai resolve soal student...");
+
+      if (effectiveAdminStudentId) {
+        setMonitoringDebugInfo(`Lookup by student_id: ${effectiveAdminStudentId}`);
+        const response = await fetch(`/api/admin/students/${effectiveAdminStudentId}/question-pdf?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        const data = (await response.json().catch(() => null)) as
+          | { user?: { questionPdfUrl?: string | null } }
+          | null;
+        setMonitoredQuestionPdfUrl(response.ok ? (data?.user?.questionPdfUrl ?? null) : null);
+        setMonitoringDebugInfo(
+          response.ok
+            ? `Lookup by student_id berhasil. PDF: ${data?.user?.questionPdfUrl ? "ada" : "kosong"}`
+            : "Lookup by student_id gagal.",
+        );
+        return;
+      }
+
+      if (effectiveAdminStudentUsername) {
+        setMonitoringDebugInfo(`Lookup by username: ${effectiveAdminStudentUsername}`);
+        const response = await fetch(`/api/admin/users?t=${Date.now()}`, { cache: "no-store" });
+        const data = (await response.json().catch(() => null)) as
+          | { users?: Array<{ username: string; role: "admin" | "student"; questionPdfUrl?: string | null }> }
+          | null;
+        if (!response.ok || !data?.users) {
+          setMonitoredQuestionPdfUrl(null);
+          setMonitoringDebugInfo("Lookup by username gagal saat memuat daftar user.");
+          return;
+        }
+        const target = data.users.find(
+          (row) => row.role === "student" && row.username === effectiveAdminStudentUsername,
+        );
+        setMonitoredQuestionPdfUrl(target?.questionPdfUrl ?? null);
+        setMonitoringDebugInfo(
+          target
+            ? `Lookup by username berhasil. PDF: ${target.questionPdfUrl ? "ada" : "kosong"}`
+            : "Student username tidak ditemukan di daftar user.",
+        );
+        return;
+      }
+
+      if (adminSubmissionId) {
+        setMonitoringDebugInfo(`Fallback by submission_id: ${adminSubmissionId}`);
+        const submissionRes = await fetch(`/api/submissions/${adminSubmissionId}?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        const submissionData = (await submissionRes.json().catch(() => null)) as
+          | { submission?: { user_id?: string | null; username?: string | null } }
+          | null;
+        if (submissionRes.ok && submissionData?.submission) {
+          const fallbackStudentId = submissionData.submission.user_id ?? "";
+          const fallbackUsername = submissionData.submission.username ?? "";
+          setMonitoringDebugInfo(
+            `Data submission terbaca. user_id: ${fallbackStudentId || "-"}, username: ${fallbackUsername || "-"}`,
+          );
+
+          if (fallbackStudentId) {
+            const byIdRes = await fetch(
+              `/api/admin/students/${fallbackStudentId}/question-pdf?t=${Date.now()}`,
+              { cache: "no-store" },
+            );
+            const byIdData = (await byIdRes.json().catch(() => null)) as
+              | { user?: { questionPdfUrl?: string | null } }
+              | null;
+            setMonitoredQuestionPdfUrl(byIdRes.ok ? (byIdData?.user?.questionPdfUrl ?? null) : null);
+            setMonitoringDebugInfo(
+              byIdRes.ok
+                ? `Fallback by user_id berhasil. PDF: ${byIdData?.user?.questionPdfUrl ? "ada" : "kosong"}`
+                : "Fallback by user_id gagal.",
+            );
+            return;
+          }
+
+          if (fallbackUsername) {
+            const usersRes = await fetch(`/api/admin/users?t=${Date.now()}`, { cache: "no-store" });
+            const usersData = (await usersRes.json().catch(() => null)) as
+              | { users?: Array<{ username: string; role: "admin" | "student"; questionPdfUrl?: string | null }> }
+              | null;
+            if (usersRes.ok && usersData?.users) {
+              const target = usersData.users.find(
+                (row) => row.role === "student" && row.username === fallbackUsername,
+              );
+              setMonitoredQuestionPdfUrl(target?.questionPdfUrl ?? null);
+              setMonitoringDebugInfo(
+                target
+                  ? `Fallback by username berhasil. PDF: ${target.questionPdfUrl ? "ada" : "kosong"}`
+                  : "Fallback username tidak ditemukan di daftar user.",
+              );
+              return;
+            }
+          }
+        }
+      }
+
+      setMonitoredQuestionPdfUrl(null);
+      setMonitoringDebugInfo("Semua metode resolve gagal. Tidak ada target student valid atau PDF belum diassign.");
+    };
+
+    void loadMonitoredQuestion();
+  }, [effectiveAdminStudentId, effectiveAdminStudentUsername, adminSubmissionId, allowAdminTerminal, user]);
+
+  useEffect(() => {
+    if (!user || user.role !== "student") {
+      return;
+    }
+    const shouldTick = (globalExamStatus === "RUNNING" && !isIndividualPaused) || globalExamStatus === "SCHEDULED";
+    if (submitted || timeExpired || !shouldTick) {
+      return;
+    }
+
+    const tick = setInterval(() => {
+      setRemainingSeconds((prev) => {
+        const next = Math.max(0, prev - 1);
+        if (next <= 0) {
+          setTimeExpired(true);
+        }
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(tick);
+  }, [user, submitted, timeExpired, globalExamStatus, isIndividualPaused]);
 
   useEffect(() => {
     if (!user || typeof window === "undefined") {
       return;
     }
 
-    const payload: PersistedState = { currentDir, folders, files, entries, submitted };
+    const payload: PersistedState = { currentDir, folders, files, entries, submitted, layoutMode };
     window.localStorage.setItem(getStorageKey(user.username), JSON.stringify(payload));
-  }, [currentDir, folders, files, entries, submitted, user]);
+  }, [currentDir, folders, files, entries, submitted, layoutMode, user]);
 
   useEffect(() => {
     if (!toast) {
@@ -451,6 +703,27 @@ function HomeContent() {
     const timer = setTimeout(() => setToast(""), 2500);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  useEffect(() => {
+    if (!showNameModal) {
+      return;
+    }
+
+    const focusTimer = setTimeout(() => {
+      studentNameInputRef.current?.focus();
+    }, 0);
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) {
+        setShowNameModal(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showNameModal, submitting]);
 
   useEffect(() => {
     if (authLoading || !rootRef.current) {
@@ -514,6 +787,39 @@ function HomeContent() {
         output,
       },
     ]);
+  };
+
+  const onTerminalInputChange = (value: string) => {
+    setTerminalInput(value);
+    if (historyIndex !== -1) {
+      setHistoryIndex(-1);
+    }
+  };
+
+  const navigateHistoryUp = () => {
+    if (commandHistory.length === 0) return;
+    if (historyIndex === -1) {
+      setHistoryDraft(terminalInput);
+      const nextIndex = commandHistory.length - 1;
+      setHistoryIndex(nextIndex);
+      setTerminalInput(commandHistory[nextIndex]);
+      return;
+    }
+    const nextIndex = Math.max(0, historyIndex - 1);
+    setHistoryIndex(nextIndex);
+    setTerminalInput(commandHistory[nextIndex]);
+  };
+
+  const navigateHistoryDown = () => {
+    if (commandHistory.length === 0 || historyIndex === -1) return;
+    const nextIndex = historyIndex + 1;
+    if (nextIndex >= commandHistory.length) {
+      setHistoryIndex(-1);
+      setTerminalInput(historyDraft);
+      return;
+    }
+    setHistoryIndex(nextIndex);
+    setTerminalInput(commandHistory[nextIndex]);
   };
 
   const openEditor = (path: string) => {
@@ -674,14 +980,10 @@ function HomeContent() {
       return;
     }
 
-    const targetPath = activeFilePath.trim();
-    if (!targetPath) {
-      setToast("Tidak ada file aktif untuk disubmit.");
-      return;
-    }
-    const targetFile = fileMap.get(targetPath);
+    const targetPath = submissionTargetPath.trim();
+    const targetFile = targetPath ? fileMap.get(targetPath) ?? null : null;
     if (!targetFile) {
-      setToast("Tidak ada file aktif untuk disubmit.");
+      setToast("Pilih file yang akan disubmit.");
       return;
     }
 
@@ -710,6 +1012,7 @@ function HomeContent() {
     }
 
     setSubmitted(true);
+    setSubmittedAt(new Date().toISOString());
     setShowNameModal(false);
     setStudentNameInput("");
     setToast("Jawaban berhasil disubmit");
@@ -719,6 +1022,13 @@ function HomeContent() {
     const rawInput = terminalInput;
     const command = rawInput.trim();
     const promptAtCommand = currentPrompt;
+
+    if (showExamActions && !isTerminalEnabled) {
+      setTerminalInput("");
+      pushEntry("(system)", ["Terminal dikunci. Ujian belum aktif."], promptAtCommand);
+      requestTerminalFocus();
+      return;
+    }
 
     setTerminalInput("");
     requestTerminalFocus();
@@ -730,6 +1040,110 @@ function HomeContent() {
 
       const nextAnswers = [...interactiveRun.answers, rawInput.trim()];
       pushEntry(rawInput.trim(), [], promptAtCommand);
+
+      if (interactiveRun.isMenuProgram) {
+        const value = rawInput.trim();
+        const stage = interactiveRun.menuStage ?? "choice";
+
+        if (stage === "choice") {
+          if (value === "1") {
+            pushEntry("(program output)", ["Nama : Praktikan", "NPM  : 12345678", "Kelas: TI-1A"], promptAtCommand);
+            pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
+            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
+            return;
+          }
+          if (value === "2") {
+            pushEntry("(program output)", ["===== LUAS PERSEGI PANJANG ====="], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan panjang:"], promptAtCommand);
+            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "luas_panjang", menuData: {} });
+            return;
+          }
+          if (value === "3") {
+            pushEntry("(program output)", ["===== CEK GANJIL / GENAP ====="], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan angka:"], promptAtCommand);
+            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "ganjil_angka", menuData: {} });
+            return;
+          }
+          if (value === "4") {
+            pushEntry("(program output)", ["===== KONVERSI SUHU ====="], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan suhu Celsius:"], promptAtCommand);
+            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "suhu_c", menuData: {} });
+            return;
+          }
+          if (value === "5") {
+            pushEntry("(program output)", ["Program selesai. Terima kasih."], promptAtCommand);
+            setInteractiveRun(null);
+            return;
+          }
+          pushEntry("(program output)", ["Pilihan tidak valid. Silakan pilih 1 sampai 5."], promptAtCommand);
+          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
+          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
+          return;
+        }
+
+        if (stage === "luas_panjang") {
+          const panjang = Number(value);
+          if (!Number.isFinite(panjang)) {
+            pushEntry("(program output)", ["Input panjang tidak valid."], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan panjang:"], promptAtCommand);
+            return;
+          }
+          pushEntry("(stdin)", ["Masukkan lebar:"], promptAtCommand);
+          setInteractiveRun({
+            ...interactiveRun,
+            answers: [],
+            menuStage: "luas_lebar",
+            menuData: { panjang },
+          });
+          return;
+        }
+
+        if (stage === "luas_lebar") {
+          const lebar = Number(value);
+          const panjangValue = interactiveRun.menuData?.panjang ?? Number.NaN;
+          if (!Number.isFinite(lebar) || !Number.isFinite(panjangValue)) {
+            pushEntry("(program output)", ["Input lebar tidak valid."], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan lebar:"], promptAtCommand);
+            return;
+          }
+          pushEntry("(program output)", [`Luas persegi panjang adalah: ${panjangValue * lebar}`], promptAtCommand);
+          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
+          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
+          return;
+        }
+
+        if (stage === "ganjil_angka") {
+          const angka = Number(value);
+          if (!Number.isFinite(angka)) {
+            pushEntry("(program output)", ["Input angka tidak valid."], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan angka:"], promptAtCommand);
+            return;
+          }
+          const label = angka % 2 === 0 ? "Genap" : "Ganjil";
+          pushEntry("(program output)", [`${angka} adalah bilangan ${label}`], promptAtCommand);
+          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
+          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
+          return;
+        }
+
+        if (stage === "suhu_c") {
+          const celsius = Number(value);
+          if (!Number.isFinite(celsius)) {
+            pushEntry("(program output)", ["Input suhu tidak valid."], promptAtCommand);
+            pushEntry("(stdin)", ["Masukkan suhu Celsius:"], promptAtCommand);
+            return;
+          }
+          const fahrenheit = (celsius * 9) / 5 + 32;
+          pushEntry(
+            "(program output)",
+            [`${celsius} derajat Celcius = ${fahrenheit} derajat Fahrenheit`],
+            promptAtCommand,
+          );
+          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
+          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
+          return;
+        }
+      }
 
       if (nextAnswers.length < interactiveRun.prompts.length) {
         pushEntry("(stdin)", [interactiveRun.prompts[nextAnswers.length]], promptAtCommand);
@@ -755,6 +1169,15 @@ function HomeContent() {
     if (!command) {
       return;
     }
+
+    setHistoryIndex(-1);
+    setHistoryDraft("");
+    setCommandHistory((prev) => {
+      if (prev[prev.length - 1] === command) {
+        return prev;
+      }
+      return [...prev, command];
+    });
 
     if (command === "clear") {
       setEntries([]);
@@ -1021,14 +1444,28 @@ function HomeContent() {
             [...shellFlow.initialOutput, shellFlow.prompts[0]].filter(Boolean),
             promptAtCommand,
           );
-          setInteractiveRun({
-            mode: "sh",
-            prompts: shellFlow.prompts,
-            answers: [],
-            sourceCode: file.content,
-            shellVars: shellFlow.inputVars,
-            shellOutputTemplates: shellFlow.tailOutputTemplates,
-          });
+          if (isMenuProgramContent(file.content)) {
+            setInteractiveRun({
+              mode: "sh",
+              prompts: [shellFlow.prompts[0]],
+              answers: [],
+              sourceCode: file.content,
+              isMenuProgram: true,
+              menuStage: "choice",
+              menuData: {},
+              shellVars: shellFlow.inputVars,
+              shellOutputTemplates: shellFlow.tailOutputTemplates,
+            });
+          } else {
+            setInteractiveRun({
+              mode: "sh",
+              prompts: shellFlow.prompts,
+              answers: [],
+              sourceCode: file.content,
+              shellVars: shellFlow.inputVars,
+              shellOutputTemplates: shellFlow.tailOutputTemplates,
+            });
+          }
           return;
         }
 
@@ -1046,8 +1483,20 @@ function HomeContent() {
       const sourceCode = source?.content || "";
       const prompts = extractInteractivePrompts(sourceCode);
       if (prompts.length > 0 && /scanf\s*\(/.test(sourceCode)) {
-        pushEntry(command, [`Program menunggu input...`, prompts[0]], promptAtCommand);
-        setInteractiveRun({ mode: "c", prompts, answers: [], sourceCode });
+        pushEntry(command, buildMenuIntroLines(sourceCode, prompts[0]), promptAtCommand);
+        if (isMenuProgramContent(sourceCode)) {
+          setInteractiveRun({
+            mode: "c",
+            prompts: [prompts[0]],
+            answers: [],
+            sourceCode,
+            isMenuProgram: true,
+            menuStage: "choice",
+            menuData: {},
+          });
+        } else {
+          setInteractiveRun({ mode: "c", prompts, answers: [], sourceCode });
+        }
         return;
       }
 
@@ -1062,8 +1511,21 @@ function HomeContent() {
     );
   };
 
+  const interruptProgram = () => {
+    if (!interactiveRun) {
+      return;
+    }
+    pushEntry("^C", ["Program dibatalkan."], currentPrompt);
+    setInteractiveRun(null);
+    setTerminalInput("");
+    requestTerminalFocus();
+  };
+
+  const submissionCandidates = files.filter((item) => item.type === "file" && item.content.trim().length > 0);
   const activeSubmissionFile = activeFilePath ? fileMap.get(activeFilePath) ?? null : null;
-  const isSubmitLocked = submitted || timeExpired;
+  const selectedSubmissionFile = submissionTargetPath ? fileMap.get(submissionTargetPath) ?? null : null;
+  const isSubmitLocked = submitted || timeExpired || !isTerminalEnabled;
+  const isTerminalInputLocked = submitted || timeExpired || !isTerminalEnabled || isIndividualPaused;
   const timerHours = Math.floor(remainingSeconds / 3600)
     .toString()
     .padStart(2, "0");
@@ -1071,7 +1533,8 @@ function HomeContent() {
     .toString()
     .padStart(2, "0");
   const timerSeconds = (remainingSeconds % 60).toString().padStart(2, "0");
-  const timerText = `${timerHours}:${timerMinutes}:${timerSeconds}`;
+  const timerText =
+    remainingSeconds >= 3600 ? `${timerHours}:${timerMinutes}:${timerSeconds}` : `${timerMinutes}:${timerSeconds}`;
   const timerBadgeClass = timeExpired
     ? "border-red-200 bg-red-50 text-red-700"
     : remainingSeconds <= 5 * 60
@@ -1093,27 +1556,70 @@ function HomeContent() {
   }
 
   const showExamActions = !(user.role === "admin" && allowAdminTerminal);
-  const hasQuestionPdf = Boolean(user.questionPdfUrl);
+  const isAdminMonitorMode = user.role === "admin" && allowAdminTerminal;
+  const previewQuestionPdfUrl =
+    user.role === "admin" && allowAdminTerminal
+      ? (effectiveAdminStudentId || effectiveAdminStudentUsername ? monitoredQuestionPdfUrl : null)
+      : (user.questionPdfUrl ?? null);
+  const hasQuestionPdf = Boolean(previewQuestionPdfUrl);
+  const showQuestionPanel = !showExamActions || layoutMode === "split" || layoutMode === "pdf";
+  const showTerminalPanel = !showExamActions || layoutMode === "split" || layoutMode === "terminal";
+  const previewPanelHeightClass =
+    layoutMode === "split"
+      ? "h-[56vh] min-h-[320px] min-[900px]:h-[calc(100vh-280px)] min-[900px]:min-h-[420px]"
+      : !showExamActions
+        ? "h-[56vh] min-h-[320px] min-[900px]:h-[calc(100vh-280px)] min-[900px]:min-h-[420px]"
+        : "h-full min-h-0";
+  const examState: "active" | "scheduled" | "not_started" | "paused_global" | "paused_individual" | "submitted" | "expired" = submitted
+    ? "submitted"
+    : globalExamStatus === "ENDED" || timeExpired
+      ? "expired"
+      : globalExamStatus === "PAUSED"
+        ? "paused_global"
+        : isIndividualPaused
+          ? "paused_individual"
+        : globalExamStatus === "SCHEDULED"
+          ? "scheduled"
+          : globalExamStatus === "NOT_STARTED"
+            ? "not_started"
+            : "active";
 
   return (
     <main ref={rootRef} className="h-screen overflow-hidden bg-[linear-gradient(160deg,#ecebe7_0%,#f4f3f1_45%,#ebe9e5_100%)] px-3 py-4 text-zinc-900 md:px-6">
       <div className={`mx-auto flex h-full w-full max-w-[1600px] flex-col space-y-3 ${showExamActions ? "pb-24" : ""}`}>
         <div
           data-animate="home-shell"
-          className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/90 bg-white/90 p-3 shadow-[0_14px_35px_-20px_rgba(0,0,0,0.45)] backdrop-blur transition"
+          className="flex flex-col gap-3 rounded-2xl border border-zinc-200/90 bg-white/90 p-3 shadow-[0_14px_35px_-20px_rgba(0,0,0,0.45)] backdrop-blur transition xl:flex-row xl:items-center xl:justify-between"
         >
-          <h1 className="text-lg font-semibold tracking-tight text-zinc-900 md:text-2xl">Ujian Praktikum Sistem Operasi</h1>
-          <div className="flex items-center gap-2">
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight text-zinc-900 md:text-2xl">Ujian Praktikum Sistem Operasi</h1>
+            <p className="mt-0.5 text-xs text-zinc-500 md:text-sm">Login sebagai {user.username} (praktikan)</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
             {showExamActions ? (
               <span
                 className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold tracking-[0.12em] md:text-sm ${
-                  submitted
+                  examState === "submitted"
                     ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : timerBadgeClass
+                    : examState === "paused_global" || examState === "paused_individual" || examState === "scheduled" || examState === "not_started"
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : timerBadgeClass
                 }`}
-                title={submitted ? "Status ujian" : "Sisa waktu ujian"}
+                title="Status ujian"
               >
-                {submitted ? "Sudah Disubmit" : timeExpired ? "00:00:00" : timerText}
+                {examState === "active"
+                  ? `Sisa Waktu ${timerText}`
+                  : examState === "scheduled"
+                    ? `Mulai dalam ${timerText}`
+                  : examState === "not_started"
+                      ? "Belum Dimulai"
+                  : examState === "paused_individual"
+                    ? "Dijeda Personal"
+                  : examState === "paused_global"
+                    ? "Dijeda Admin"
+                      : examState === "submitted"
+                        ? "Sudah Disubmit"
+                        : "Waktu Habis"}
               </span>
             ) : null}
             {user.role === "admin" && !allowAdminTerminal ? (
@@ -1123,15 +1629,6 @@ function HomeContent() {
                 className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-zinc-600"
               >
                 {showHelpPanel ? "Sembunyikan Bantuan" : "Tampilkan Bantuan"}
-              </button>
-            ) : null}
-            {showExamActions && !showPdfPreview && hasQuestionPdf ? (
-              <button
-                type="button"
-                onClick={() => setShowPdfPreview(true)}
-                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 hover:bg-indigo-500"
-              >
-                Lihat Soal
               </button>
             ) : null}
             {showExamActions ? (
@@ -1150,35 +1647,77 @@ function HomeContent() {
 
         <div data-animate="home-shell" className="flex min-h-0 flex-1 flex-col space-y-3">
           {showExamActions ? (
-            <div className="lg:hidden">
-              {hasQuestionPdf ? (
+            <div className="rounded-xl border border-zinc-200 bg-white/90 p-2 shadow-[0_10px_24px_-18px_rgba(0,0,0,0.35)]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="inline-flex rounded-lg border border-zinc-200 bg-zinc-50 p-1 text-xs font-semibold">
                 <button
                   type="button"
-                  onClick={() => setShowMobilePdfModal(true)}
-                  className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                  onClick={() => setLayoutMode("split")}
+                  className={`rounded-lg px-2.5 py-1 ${layoutMode === "split" ? "bg-zinc-800 text-white" : "text-zinc-600"}`}
                 >
-                  Lihat Soal
+                  Split View
                 </button>
-              ) : (
-                <p className="text-sm text-zinc-600">Soal PDF belum tersedia. Silakan hubungi admin.</p>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode("pdf")}
+                  className={`rounded-lg px-2.5 py-1 ${layoutMode === "pdf" ? "bg-zinc-800 text-white" : "text-zinc-600"}`}
+                >
+                  Soal Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLayoutMode("terminal")}
+                  className={`rounded-lg px-2.5 py-1 ${layoutMode === "terminal" ? "bg-zinc-800 text-white" : "text-zinc-600"}`}
+                >
+                  Terminal Only
+                </button>
+                </div>
+                <div className="min-[900px]:hidden">
+                {hasQuestionPdf ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowMobilePdfModal(true)}
+                    className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                  >
+                    Lihat Soal
+                  </button>
+                ) : (
+                  <p className="text-sm text-zinc-600">
+                    {user.role === "admin" && allowAdminTerminal
+                      ? "Soal belum diassign untuk praktikan ini."
+                      : "Soal PDF belum tersedia. Silakan hubungi admin."}
+                  </p>
+                )}
+                </div>
+              </div>
             </div>
           ) : null}
 
-          <div className="flex min-h-0 flex-1 gap-3 transition-all duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)]">
-            {showExamActions ? (
+          <div
+            className={`min-h-0 flex-1 gap-3 transition-all duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+              layoutMode === "split" && showQuestionPanel && showTerminalPanel
+                ? "grid grid-cols-1 min-[900px]:grid-cols-2 items-stretch"
+                : layoutMode === "pdf"
+                  ? "flex h-full flex-col"
+                  : "flex flex-col"
+            }`}
+          >
+            {showQuestionPanel ? (
               <aside
-                className={`hidden min-h-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white/95 shadow-[0_16px_36px_-24px_rgba(0,0,0,0.5)] transition-[width,opacity,transform] duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:flex lg:flex-col ${
-                  showPdfPreview
-                    ? "w-[40%] translate-x-0 opacity-100"
-                    : "pointer-events-none w-0 -translate-x-6 opacity-0"
-                }`}
+                className={`h-full min-h-0 min-w-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white/95 shadow-[0_16px_36px_-24px_rgba(0,0,0,0.5)] ${
+                  layoutMode === "pdf" ? "mx-auto h-full w-full max-w-[1100px] flex-1" : ""
+                } flex flex-col`}
               >
                 <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-100 px-3 py-2.5">
-                  <p className="text-sm font-semibold text-zinc-800">Preview Soal</p>
+                  <div>
+                    <p className="text-sm font-semibold text-zinc-800">Preview Soal</p>
+                    {!showExamActions && effectiveAdminStudentUsername ? (
+                      <p className="text-xs text-zinc-500">Praktikan: {effectiveAdminStudentUsername}</p>
+                    ) : null}
+                  </div>
                   <div className="flex gap-2">
                     <a
-                      href={hasQuestionPdf ? user.questionPdfUrl ?? "#" : "#"}
+                      href={hasQuestionPdf ? previewQuestionPdfUrl ?? "#" : "#"}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-disabled={!hasQuestionPdf}
@@ -1190,51 +1729,68 @@ function HomeContent() {
                     >
                       Buka PDF
                     </a>
-                    <button
-                      type="button"
-                      onClick={() => setShowPdfPreview(false)}
-                      className="rounded-lg bg-zinc-700 px-2 py-1 text-xs font-semibold text-white transition hover:bg-zinc-600"
-                    >
-                      Sembunyikan
-                    </button>
                   </div>
                 </div>
-                <div className="relative h-full min-h-0 overflow-auto bg-zinc-50 p-2">
+                <div className={`relative min-h-0 flex-1 overflow-hidden bg-zinc-50 p-0 ${previewPanelHeightClass}`}>
                   {hasQuestionPdf ? (
                     <>
                       {pdfLoadingDesktop ? (
-                        <div className="absolute inset-2 animate-pulse rounded-xl border border-zinc-200 bg-white" />
+                        <div className="absolute inset-0 animate-pulse border border-zinc-200 bg-white" />
                       ) : null}
                       <iframe
                         title="Preview Soal Praktikum"
-                        src={user.questionPdfUrl ?? ""}
-                        key={user.questionPdfUrl ?? "no-pdf-desktop"}
+                        src={previewQuestionPdfUrl ?? ""}
+                        key={previewQuestionPdfUrl ?? "no-pdf-desktop"}
                         onLoad={() => setPdfLoadingDesktop(false)}
-                        className="h-full min-h-[74vh] w-full rounded-xl border border-zinc-300 bg-white opacity-100"
+                        onError={() => {
+                          setPdfLoadError(true);
+                          setPdfLoadingDesktop(false);
+                        }}
+                        className="block h-full min-h-0 w-full border border-zinc-300 bg-white opacity-100"
                         style={{ opacity: 1, filter: "none" }}
                       />
                     </>
                   ) : (
                     <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white/80 p-4 text-center">
                       <div className="h-10 w-8 rounded border-2 border-zinc-300 bg-zinc-100" />
-                      <p className="text-sm font-semibold text-zinc-700">Soal belum tersedia</p>
-                      <p className="text-xs text-zinc-500">Soal PDF belum tersedia. Silakan hubungi admin.</p>
+                      <p className="text-sm font-semibold text-zinc-700">
+                        {user.role === "admin" && allowAdminTerminal
+                          ? "Soal belum diassign untuk praktikan ini."
+                          : "Soal belum tersedia"}
+                      </p>
+                      <p className="text-xs text-zinc-500">
+                        {user.role === "admin" && allowAdminTerminal
+                          ? "Silakan pilih atau ganti soal dari Admin Dashboard."
+                          : "Soal PDF belum tersedia. Silakan hubungi admin."}
+                      </p>
                     </div>
                   )}
+                  {pdfLoadError && hasQuestionPdf ? (
+                    <div className="absolute inset-2 flex items-center justify-center rounded-xl border border-red-200 bg-red-50/95 p-4 text-center">
+                      <div>
+                        <p className="text-sm font-semibold text-red-700">Gagal memuat soal.</p>
+                        <p className="mt-1 text-xs text-red-600">Periksa file PDF atau assignment soal praktikan ini.</p>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </aside>
             ) : null}
 
-            <div
-              className={`min-h-0 flex-1 transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
-                showExamActions && !showPdfPreview ? "mx-auto w-full max-w-[1180px]" : ""
+            {showTerminalPanel ? (
+              <div
+              className={`h-full min-h-0 flex-1 transition-all duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                showExamActions && !showQuestionPanel ? "mx-auto w-full max-w-[1400px]" : ""
               }`}
             >
               <Terminal
                 entries={entries}
                 inputValue={terminalInput}
-                onInputChange={setTerminalInput}
+                onInputChange={onTerminalInputChange}
                 onSubmit={runCommand}
+                onHistoryUp={navigateHistoryUp}
+                onHistoryDown={navigateHistoryDown}
+                onInterrupt={interruptProgram}
                 focusSignal={focusSignal}
                 prompt={currentPrompt}
                 username={user.username}
@@ -1245,37 +1801,87 @@ function HomeContent() {
                     : undefined
                 }
                 stdinMode={Boolean(interactiveRun)}
-                readOnly={showExamActions && isSubmitLocked}
+                readOnly={showExamActions && isTerminalInputLocked}
+                stateBanner={
+                  isAdminMonitorMode
+                    ? null
+                    : examState === "submitted"
+                    ? {
+                        title: "Ujian sudah disubmit",
+                        description: `Jawaban tidak dapat diubah lagi.\nMode: Read Only${submittedAt ? `\nWaktu submit: ${new Date(submittedAt).toLocaleString()}` : ""}`,
+                        tone: "success",
+                      }
+                    : examState === "expired"
+                      ? {
+                          title: "Waktu ujian telah habis",
+                          description: "Jawaban tidak dapat diubah dan mode terminal read-only aktif.",
+                          tone: "danger",
+                        }
+                      : examState === "not_started"
+                        ? {
+                            title: "Ujian belum dimulai",
+                            description: "Ujian belum dimulai. Terminal masih dikunci oleh admin.",
+                            tone: "warning",
+                          }
+                      : examState === "scheduled"
+                        ? {
+                            title: "Ujian terjadwal",
+                            description: `Ujian akan dimulai pada ${examStartTime ? new Date(examStartTime).toLocaleString() : "-"}.\nTerminal akan aktif otomatis saat ujian dimulai.`,
+                            tone: "warning",
+                          }
+                      : examState === "paused_global"
+                        ? {
+                            title: "Ujian sedang dijeda oleh admin",
+                            description: "Countdown berhenti sementara, input terminal dinonaktifkan.",
+                            tone: "warning",
+                          }
+                        : examState === "paused_individual"
+                          ? {
+                              title: "Timer kamu dijeda oleh admin",
+                              description: "Input terminal dinonaktifkan sementara untuk akun ini.",
+                              tone: "warning",
+                            }
+                          : null
+                }
               />
-            </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
 
       {showExamActions ? (
         <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-zinc-200 bg-white/95 shadow-[0_-8px_24px_-16px_rgba(0,0,0,0.4)] backdrop-blur">
-          <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-3 px-3 py-3 md:px-6">
-            <p className="text-xs text-zinc-600 md:text-sm">
-              {submitted
-                ? "Ujian sudah disubmit. Jawaban tidak dapat diubah lagi."
-                : timeExpired
+          <div className="mx-auto flex w-full max-w-[1600px] flex-col items-start gap-2 px-3 py-3 md:flex-row md:items-center md:justify-between md:gap-3 md:px-6">
+            {examState === "submitted" ? (
+              <div className="inline-flex items-center rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 md:text-sm">
+                <span>Ujian sudah disubmit. Jawaban tidak dapat diubah lagi.</span>
+              </div>
+            ) : (
+              <p className="text-xs text-zinc-600 md:text-sm">
+                {examState === "expired"
                   ? "Waktu ujian habis. Jawaban tidak dapat diubah lagi."
-                  : "Pastikan semua jawaban sudah selesai sebelum submit."}
-            </p>
-            {showExamActions && isExamPaused && !submitted ? (
-              <p className="text-xs text-amber-700 md:text-sm">Ujian sedang dijeda oleh admin.</p>
+                  : examState === "not_started"
+                    ? "Ujian belum dimulai. Terminal masih dikunci oleh admin."
+                  : examState === "scheduled"
+                    ? `Ujian akan dimulai pada ${examStartTime ? new Date(examStartTime).toLocaleString() : "-"}`
+                  : examState === "paused_individual"
+                    ? "Timer akun ini sedang dijeda oleh admin."
+                  : examState === "paused_global"
+                    ? "Ujian sedang dijeda oleh admin."
+                      : "Pastikan jawaban sudah benar sebelum submit."}
+              </p>
+            )}
+            {examState === "active" || examState === "paused_global" || examState === "paused_individual" || examState === "scheduled" || examState === "not_started" ? (
+              <button
+                type="button"
+                onClick={() => setConfirmAction("submit")}
+                disabled={isSubmitLocked || examState !== "active"}
+                className="self-end rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 md:self-auto"
+              >
+                Submit Ujian
+              </button>
             ) : null}
-            {showExamActions && !isExamPaused && isIndividualPaused && !submitted ? (
-              <p className="text-xs text-amber-700 md:text-sm">Timer kamu dijeda oleh admin.</p>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setConfirmAction("submit")}
-              disabled={isSubmitLocked}
-              className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitted ? "Sudah Disubmit" : timeExpired ? "Waktu Habis" : "Submit Ujian"}
-            </button>
           </div>
         </div>
       ) : null}
@@ -1294,54 +1900,139 @@ function HomeContent() {
       />
 
       {showNameModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-xl rounded-xl border border-zinc-700 bg-zinc-900 p-4">
-            <h2 className="text-lg font-semibold">Isi Nama Praktikan</h2>
-            <p className="mt-2 text-sm text-zinc-400">
-              Masukkan nama kamu sebelum submit ujian.
-            </p>
-            <div className="mt-3">
-              <label htmlFor="student-name" className="mb-1 block text-sm text-zinc-300">
-                Nama Praktikan
-              </label>
-              <input
-                id="student-name"
-                value={studentNameInput}
-                onChange={(event) => setStudentNameInput(event.target.value)}
-                className="w-full rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none"
-                placeholder="Contoh: Faiq Bangkit Wicaksono"
-              />
-            </div>
-            <div className="mt-3 rounded border border-zinc-700 bg-zinc-950 p-3 text-sm">
-              <p className="mb-1 text-zinc-400">File yang akan disubmit:</p>
-              <p className="break-all text-zinc-100">
-                {activeSubmissionFile?.name ?? "Tidak ada file aktif untuk disubmit."}
-              </p>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="submit-modal-title"
+            className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 text-slate-900 shadow-xl sm:p-6"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 id="submit-modal-title" className="text-xl font-semibold text-slate-900">
+                  Submit Ujian
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Pastikan data yang kamu kirim sudah benar sebelum menyelesaikan ujian.
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={() => setShowNameModal(false)}
-                className="rounded-md bg-zinc-700 px-3 py-2 text-sm"
+                onClick={() => !submitting && setShowNameModal(false)}
+                disabled={submitting}
+                className="rounded-lg px-2 py-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
+                aria-label="Tutup modal submit"
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const finalName = studentNameInput.trim();
-                  if (!finalName) {
-                    alert("Nama wajib diisi.");
-                    return;
-                  }
-                  void submitExam(finalName);
-                }}
-                disabled={submitting || !activeSubmissionFile}
-                className="rounded-md bg-blue-600 px-3 py-2 text-sm disabled:opacity-60"
-              >
-                {submitting ? "Mengirim..." : "Submit"}
+                x
               </button>
             </div>
+
+            <form
+              className="mt-5 space-y-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const finalName = studentNameInput.trim();
+                let hasError = false;
+
+                if (!finalName) {
+                  setStudentNameError("Nama praktikan wajib diisi.");
+                  hasError = true;
+                } else {
+                  setStudentNameError("");
+                }
+
+                if (!submissionTargetPath.trim()) {
+                  setSubmissionFileError("File submit wajib dipilih.");
+                  hasError = true;
+                } else {
+                  setSubmissionFileError("");
+                }
+
+                if (hasError) {
+                  return;
+                }
+                void submitExam(finalName);
+              }}
+            >
+              <div>
+                <label htmlFor="student-name" className="mb-1.5 block text-sm font-medium text-slate-700">
+                  Nama Praktikan
+                </label>
+                <input
+                  ref={studentNameInputRef}
+                  id="student-name"
+                  value={studentNameInput}
+                  onChange={(event) => {
+                    setStudentNameInput(event.target.value);
+                    if (studentNameError) setStudentNameError("");
+                  }}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  placeholder="Contoh: Faiq Bangkit Wicaksono"
+                />
+                {studentNameError ? (
+                  <p className="mt-1 text-xs font-medium text-red-600">{studentNameError}</p>
+                ) : null}
+              </div>
+
+              <div>
+                <p className="mb-1.5 text-sm font-medium text-slate-700">File terpilih</p>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700">
+                  <p className="break-all">{selectedSubmissionFile?.name ?? "Belum ada file dipilih."}</p>
+                </div>
+              </div>
+
+              {submissionCandidates.length > 1 ? (
+                <div>
+                  <label htmlFor="submission-file" className="mb-1.5 block text-sm font-medium text-slate-700">
+                    Pilih file submit
+                  </label>
+                  <select
+                    id="submission-file"
+                    value={submissionTargetPath}
+                    onChange={(event) => {
+                      setSubmissionTargetPath(event.target.value);
+                      if (submissionFileError) setSubmissionFileError("");
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  >
+                    <option value="">Pilih file jawaban...</option>
+                    {submissionCandidates.map((file) => (
+                      <option key={file.name} value={file.name}>
+                        {file.name}
+                      </option>
+                    ))}
+                  </select>
+                  {submissionFileError ? (
+                    <p className="mt-1 text-xs font-medium text-red-600">{submissionFileError}</p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowNameModal(false)}
+                  disabled={submitting}
+                  className="rounded-xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200 disabled:opacity-60"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting || !submissionTargetPath.trim()}
+                  className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submitting ? (
+                    <span className="inline-flex items-center gap-2">
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                      Mengirim...
+                    </span>
+                  ) : (
+                    "Submit Ujian"
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}
@@ -1376,8 +2067,8 @@ function HomeContent() {
                     return;
                   }
 
-                  if (!activeSubmissionFile) {
-                    setToast("Tidak ada file aktif untuk disubmit.");
+                  if (submissionCandidates.length === 0) {
+                    setToast("Belum ada file jawaban untuk disubmit.");
                     return;
                   }
                   if (timeExpired) {
@@ -1386,6 +2077,9 @@ function HomeContent() {
                   }
 
                   setStudentNameInput("");
+                  setSubmissionTargetPath(activeSubmissionFile?.name ?? submissionCandidates[0]?.name ?? "");
+                  setStudentNameError("");
+                  setSubmissionFileError("");
                   setShowNameModal(true);
                 }}
                 className={`rounded-md px-3 py-2 text-sm text-white ${
@@ -1414,7 +2108,7 @@ function HomeContent() {
               <h2 className="text-sm font-semibold text-zinc-100">Preview Soal</h2>
               <div className="flex gap-2">
                 <a
-                  href={hasQuestionPdf ? user.questionPdfUrl ?? "#" : "#"}
+                  href={hasQuestionPdf ? previewQuestionPdfUrl ?? "#" : "#"}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-disabled={!hasQuestionPdf}
@@ -1441,9 +2135,13 @@ function HomeContent() {
                   ) : null}
                   <iframe
                     title="Preview Soal Praktikum Mobile"
-                    src={user.questionPdfUrl ?? ""}
-                    key={user.questionPdfUrl ?? "no-pdf-mobile"}
+                    src={previewQuestionPdfUrl ?? ""}
+                    key={previewQuestionPdfUrl ?? "no-pdf-mobile"}
                     onLoad={() => setPdfLoadingMobile(false)}
+                    onError={() => {
+                      setPdfLoadError(true);
+                      setPdfLoadingMobile(false);
+                    }}
                     className="h-full min-h-[78vh] w-full rounded-xl border border-zinc-300 bg-white opacity-100"
                     style={{ opacity: 1, filter: "none" }}
                   />
@@ -1451,8 +2149,16 @@ function HomeContent() {
               ) : (
                 <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-white/80 p-4 text-center">
                   <div className="h-10 w-8 rounded border-2 border-zinc-300 bg-zinc-100" />
-                  <p className="text-sm font-semibold text-zinc-700">Soal belum tersedia</p>
-                  <p className="text-xs text-zinc-500">Soal PDF belum tersedia. Silakan hubungi admin.</p>
+                  <p className="text-sm font-semibold text-zinc-700">
+                    {user.role === "admin" && allowAdminTerminal
+                      ? "Soal belum diassign untuk praktikan ini."
+                      : "Soal belum tersedia"}
+                  </p>
+                  <p className="text-xs text-zinc-500">
+                    {user.role === "admin" && allowAdminTerminal
+                      ? "Silakan pilih atau ganti soal dari Admin Dashboard."
+                      : "Soal PDF belum tersedia. Silakan hubungi admin."}
+                  </p>
                 </div>
               )}
             </div>

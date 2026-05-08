@@ -14,6 +14,39 @@ type Params = {
 
 export const runtime = "nodejs";
 
+export async function GET(_: Request, context: Params) {
+  const sessionUser = await getSessionUser();
+  if (!sessionUser) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (sessionUser.role !== "admin") {
+    return NextResponse.json({ error: "Anda tidak memiliki akses." }, { status: 403 });
+  }
+
+  const { studentId } = await context.params;
+  const supabase = getSupabaseAdmin();
+  const { data: student, error } = await supabase
+    .from("users")
+    .select("id, role, question_pdf_url, username")
+    .eq("id", studentId)
+    .single();
+
+  if (error || !student) {
+    return NextResponse.json({ error: "User tidak ditemukan." }, { status: 404 });
+  }
+  if (student.role !== "student") {
+    return NextResponse.json({ error: "User target bukan praktikan." }, { status: 400 });
+  }
+
+  return NextResponse.json({
+    user: {
+      id: student.id,
+      username: student.username,
+      questionPdfUrl: student.question_pdf_url ? `/api/questions/${student.id}/pdf` : null,
+    },
+  });
+}
+
 export async function POST(request: Request, context: Params) {
   const sessionUser = await getSessionUser();
   if (!sessionUser) {

@@ -38,3 +38,24 @@ alter table public.exam_sessions
   add column if not exists is_paused boolean not null default false;
 
 create index if not exists exam_sessions_started_at_idx on public.exam_sessions (started_at);
+
+create table if not exists public.exam_control (
+  id boolean primary key default true check (id = true),
+  status text not null default 'NOT_STARTED' check (status in ('NOT_STARTED', 'SCHEDULED', 'RUNNING', 'PAUSED', 'ENDED')),
+  start_time timestamptz null,
+  end_time timestamptz null,
+  paused_at timestamptz null,
+  paused_remaining_seconds integer null,
+  updated_by text null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+insert into public.exam_control (id, status)
+values (true, 'NOT_STARTED')
+on conflict (id) do nothing;
+
+alter table public.exam_control
+  add column if not exists paused_remaining_seconds integer null;
+alter table public.exam_control
+  add column if not exists updated_by text null;

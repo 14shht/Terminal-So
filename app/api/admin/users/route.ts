@@ -15,6 +15,7 @@ const mapUser = (row: {
   id: string;
   username: string;
   role: "admin" | "student";
+  is_active: boolean;
   created_at: string;
   question_pdf_url?: string | null;
 }, timer?: {
@@ -26,6 +27,7 @@ const mapUser = (row: {
   id: row.id,
   username: row.username,
   role: row.role,
+  isActive: row.is_active,
   created_at: row.created_at,
   questionPdfUrl: row.question_pdf_url ? `/api/questions/${row.id}/pdf` : null,
   timer: timer
@@ -51,7 +53,7 @@ export async function GET() {
   const [sessionMap, settings] = await Promise.all([listExamSessionMap(), getExamSettings()]);
   const { data, error } = await supabase
     .from("users")
-    .select("id, username, role, created_at, question_pdf_url")
+    .select("id, username, role, is_active, created_at, question_pdf_url")
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -97,9 +99,10 @@ export async function POST(request: Request) {
       username,
       password_hash: passwordHash,
       role,
+      is_active: true,
       question_pdf_url: null,
     })
-    .select("id, username, role, created_at, question_pdf_url")
+    .select("id, username, role, is_active, created_at, question_pdf_url")
     .single();
 
   if (error) {

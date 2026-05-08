@@ -15,12 +15,14 @@ const mapUser = (row: {
   id: string;
   username: string;
   role: "admin" | "student";
+  is_active: boolean;
   created_at: string;
   question_pdf_url?: string | null;
 }) => ({
   id: row.id,
   username: row.username,
   role: row.role,
+  isActive: row.is_active,
   created_at: row.created_at,
   questionPdfUrl: row.question_pdf_url ? `/api/questions/${row.id}/pdf` : null,
 });
@@ -72,7 +74,7 @@ export async function PATCH(request: Request, context: Params) {
     .from("users")
     .update(updates)
     .eq("id", id)
-    .select("id, username, role, created_at, question_pdf_url")
+    .select("id, username, role, is_active, created_at, question_pdf_url")
     .single();
 
   if (error) {

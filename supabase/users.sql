@@ -5,9 +5,13 @@ create table if not exists public.users (
   username text not null unique,
   password_hash text not null,
   role text not null check (role in ('admin', 'student')),
+  is_active boolean not null default true,
   question_pdf_url text null,
   created_at timestamptz not null default now()
 );
+
+alter table public.users
+  add column if not exists is_active boolean not null default true;
 
 alter table public.users
   add column if not exists question_pdf_url text null;

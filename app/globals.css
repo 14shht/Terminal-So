@@ -21,3 +21,27 @@ body {
   background: var(--background);
   color: var(--foreground);
 }
+
+.timer-dropdown-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #a1a1aa #f4f4f5;
+  scrollbar-gutter: stable;
+}
+
+.timer-dropdown-scroll::-webkit-scrollbar {
+  width: 7px;
+}
+
+.timer-dropdown-scroll::-webkit-scrollbar-track {
+  background: #f4f4f5;
+}
+
+.timer-dropdown-scroll::-webkit-scrollbar-thumb {
+  background: #a1a1aa;
+  border-radius: 9999px;
+  border: 1px solid #f4f4f5;
+}
+
+.timer-dropdown-scroll::-webkit-scrollbar-thumb:hover {
+  background: #71717a;
+}

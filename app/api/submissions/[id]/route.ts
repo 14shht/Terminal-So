@@ -25,7 +25,58 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       return NextResponse.json({ error: error.message }, { status: 404 });
     }
 
-    return NextResponse.json({ submission: data });
+    const submissionUserId = data?.user_id?.toString?.() ?? "";
+    const submissionUsername =
+      data?.username?.toString?.() ??
+      data?.student_username?.toString?.() ??
+      "";
+    let assignedQuestion: {
+      id: string;
+      title: string;
+      fileName: string;
+      fileUrl: string;
+      assignedAt: string | null;
+    } | null = null;
+
+    if (submissionUserId) {
+      const { data: questionOwner } = await supabase
+        .from("users")
+        .select("id, username, question_pdf_url, created_at")
+        .eq("id", submissionUserId)
+        .maybeSingle();
+
+      if (questionOwner?.question_pdf_url) {
+        const fileName = questionOwner.question_pdf_url.split("/").pop() || "soal.pdf";
+        assignedQuestion = {
+          id: questionOwner.id,
+          title: `Soal ${questionOwner.username}`,
+          fileName,
+          fileUrl: `/api/questions/${questionOwner.id}/pdf`,
+          assignedAt: questionOwner.created_at ?? null,
+        };
+      }
+    }
+
+    if (!assignedQuestion && submissionUsername) {
+      const { data: questionOwner } = await supabase
+        .from("users")
+        .select("id, username, question_pdf_url, created_at")
+        .eq("username", submissionUsername)
+        .maybeSingle();
+
+      if (questionOwner?.question_pdf_url) {
+        const fileName = questionOwner.question_pdf_url.split("/").pop() || "soal.pdf";
+        assignedQuestion = {
+          id: questionOwner.id,
+          title: `Soal ${questionOwner.username}`,
+          fileName,
+          fileUrl: `/api/questions/${questionOwner.id}/pdf`,
+          assignedAt: questionOwner.created_at ?? null,
+        };
+      }
+    }
+
+    return NextResponse.json({ submission: data, assignedQuestion });
   } catch (error) {
     console.error("[GET /api/submissions/[id]] unexpected error:", error);
     const message = error instanceof Error ? error.message : "Internal server error";

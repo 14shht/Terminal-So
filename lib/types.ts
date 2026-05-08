@@ -19,6 +19,7 @@ export type AppUser = {
   id?: string;
   username: string;
   role: AppRole;
+  isActive?: boolean;
   questionPdfUrl?: string | null;
 };
 

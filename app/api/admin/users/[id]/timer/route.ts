@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import {
   addStudentExamTime,
+  forceFinishStudentExam,
+  reopenStudentExam,
   resetStudentExamTimer,
   setStudentExamPause,
 } from "@/lib/exam-timer";
@@ -55,6 +57,16 @@ export async function PATCH(request: Request, context: Params) {
 
     if (action === "reset_timer") {
       await resetStudentExamTimer(id);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "force_finish") {
+      await forceFinishStudentExam(id);
+      return NextResponse.json({ success: true });
+    }
+
+    if (action === "reopen_exam") {
+      await reopenStudentExam(id);
       return NextResponse.json({ success: true });
     }
 

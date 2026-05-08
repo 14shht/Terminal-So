@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getOrCreateExamSession, markExamSubmitted } from "@/lib/exam-timer";
+import { getGlobalExamControl, markExamSubmitted } from "@/lib/exam-control";
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 
 export async function POST(req: Request) {
@@ -17,21 +17,20 @@ export async function POST(req: Request) {
     const supabase = getSupabaseAdmin();
     const { data: currentUser } = await supabase
       .from("users")
-      .select("id, username, role")
+      .select("id, username, role, is_active")
       .eq("username", sessionUser.username)
       .maybeSingle();
 
     if (!currentUser || currentUser.role !== "student") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    if (!currentUser.is_active) {
+      return NextResponse.json({ error: "Akun Anda sedang dinonaktifkan. Hubungi admin." }, { status: 403 });
+    }
 
-    const examSession = await getOrCreateExamSession({
-      userId: currentUser.id,
-      username: currentUser.username,
-    });
-
-    if (examSession.status === "timeout") {
-      return NextResponse.json({ error: "Waktu ujian habis. Submit dinonaktifkan." }, { status: 400 });
+    const examControl = await getGlobalExamControl();
+    if (examControl.status !== "RUNNING") {
+      return NextResponse.json({ error: "Terminal dikunci. Ujian belum aktif." }, { status: 403 });
     }
 
     const body = await req.json().catch(() => null);

@@ -78,6 +78,11 @@ export default function SubmissionDetailPage() {
     }
     const code = (submission as SubmissionRecord & { code?: string }).code || "";
 
+    const monitoredUsername =
+      (submission as SubmissionRecord & { student_username?: string }).username ||
+      (submission as SubmissionRecord & { student_username?: string }).student_username ||
+      "";
+
     const payload = {
       currentDir: parentDir,
       folders,
@@ -102,11 +107,21 @@ export default function SubmissionDetailPage() {
         },
       ],
       submitted: false,
+      monitoredStudentId: submission.user_id ?? "",
+      monitoredStudentUsername: monitoredUsername,
     };
 
     window.localStorage.setItem(storageKey, JSON.stringify(payload));
     const backTo = `/admin/submissions/${id}`;
-    router.push(`/?admin_terminal=1&admin_return=${encodeURIComponent(backTo)}`);
+    const studentId = submission.user_id ?? "";
+    const studentUsername = monitoredUsername;
+    const query = new URLSearchParams({
+      admin_terminal: "1",
+      admin_return: backTo,
+      ...(studentId ? { admin_student_id: studentId } : {}),
+      ...(studentUsername ? { admin_student_username: studentUsername } : {}),
+    });
+    router.push(`/?${query.toString()}`);
   };
 
   useEffect(() => {
