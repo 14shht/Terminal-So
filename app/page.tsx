@@ -2096,7 +2096,7 @@ function HomeContent() {
       ) : null}
 
       {toast ? (
-        <div className="fixed bottom-4 right-4 rounded-md bg-zinc-800 px-4 py-2 text-sm text-zinc-100 shadow-lg">
+        <div className="fixed bottom-4 right-4 rounded-md border border-zinc-200 bg-white px-4 py-2 text-sm text-zinc-900 shadow-lg">
           {toast}
         </div>
       ) : null}
