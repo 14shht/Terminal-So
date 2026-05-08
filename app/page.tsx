@@ -1566,7 +1566,7 @@ function HomeContent() {
   const showTerminalPanel = !showExamActions || layoutMode === "split" || layoutMode === "terminal";
   const previewPanelHeightClass =
     layoutMode === "split"
-      ? "h-[56vh] min-h-[320px] min-[900px]:h-[calc(100vh-280px)] min-[900px]:min-h-[420px]"
+      ? "h-full min-h-0"
       : !showExamActions
         ? "h-[56vh] min-h-[320px] min-[900px]:h-[calc(100vh-280px)] min-[900px]:min-h-[420px]"
         : "h-full min-h-0";
@@ -1696,7 +1696,7 @@ function HomeContent() {
           <div
             className={`min-h-0 flex-1 gap-3 transition-all duration-[450ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
               layoutMode === "split" && showQuestionPanel && showTerminalPanel
-                ? "grid grid-cols-1 min-[900px]:grid-cols-2 items-stretch"
+                ? "grid grid-cols-1 min-[900px]:h-[calc(100vh-230px)] min-[900px]:grid-cols-2 items-stretch"
                 : layoutMode === "pdf"
                   ? "flex h-full flex-col"
                   : "flex flex-col"
