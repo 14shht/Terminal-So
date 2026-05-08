@@ -1136,7 +1136,7 @@ export default function AdminPage() {
       {isUploadModalOpen && selectedStudent ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div
-            className={`w-full rounded-xl border border-zinc-700 bg-zinc-900 p-4 text-zinc-100 shadow-2xl ${
+            className={`w-full rounded-xl border border-zinc-200 bg-white p-4 text-zinc-900 shadow-2xl ${
               selectedPdfFile ? "max-w-4xl" : "max-w-2xl"
             }`}
           >
@@ -1145,23 +1145,23 @@ export default function AdminPage() {
                 ? `Ganti Soal untuk ${selectedStudent.username}`
                 : `Upload Soal untuk ${selectedStudent.username}`}
             </h2>
-            <p className="mt-1 text-sm text-zinc-300">
+            <p className="mt-1 text-sm text-zinc-600">
               Pilih file PDF (maksimal 10MB), lalu konfirmasi upload.
             </p>
 
             {!selectedPdfFile ? (
-              <div className="mt-4 rounded-lg border border-zinc-700 bg-zinc-950 p-4">
+              <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
                 <input
                   type="file"
                   accept=".pdf,application/pdf"
                   onChange={(event) => onSelectPdfFile(event.target.files?.[0] ?? null)}
-                  className="block w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm"
+                  className="block w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
                 />
-                <p className="mt-2 text-xs text-zinc-400">Format: PDF, maksimal 10MB.</p>
+                <p className="mt-2 text-xs text-zinc-500">Format: PDF, maksimal 10MB.</p>
               </div>
             ) : (
               <div className="mt-4 space-y-3">
-                <div className="rounded-lg border border-zinc-700 bg-zinc-950 p-3 text-sm">
+                <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700">
                   <p>Nama file: {selectedPdfFile.name}</p>
                   <p>Ukuran: {(selectedPdfFile.size / 1024 / 1024).toFixed(2)} MB</p>
                 </div>
@@ -1175,7 +1175,7 @@ export default function AdminPage() {
               </div>
             )}
 
-            {uploadError ? <p className="mt-3 text-sm text-red-400">{uploadError}</p> : null}
+            {uploadError ? <p className="mt-3 text-sm text-red-600">{uploadError}</p> : null}
 
             <div className="mt-4 flex flex-wrap justify-end gap-2">
               {selectedPdfFile ? (
@@ -1195,12 +1195,12 @@ export default function AdminPage() {
                 </button>
               ) : null}
               <button
-                type="button"
-                onClick={resetUploadModalState}
-                className="rounded-md bg-zinc-700 px-3 py-2 text-sm text-zinc-100"
-              >
-                Batal
-              </button>
+                  type="button"
+                  onClick={resetUploadModalState}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50"
+                >
+                  Batal
+                </button>
               <button
                 type="button"
                 onClick={() => {
@@ -1218,14 +1218,14 @@ export default function AdminPage() {
 
       {showLogoutConfirm ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-900 p-4">
-            <h2 className="text-lg font-semibold text-zinc-100">Konfirmasi Logout</h2>
-            <p className="mt-2 text-sm text-zinc-300">Anda yakin ingin logout?</p>
+          <div className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-4 shadow-[0_24px_60px_-24px_rgba(0,0,0,0.45)]">
+            <h2 className="text-lg font-semibold text-zinc-900">Konfirmasi Logout</h2>
+            <p className="mt-2 text-sm text-zinc-600">Anda yakin ingin logout?</p>
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setShowLogoutConfirm(false)}
-                className="rounded-md bg-zinc-700 px-3 py-2 text-sm text-zinc-100"
+                className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50"
               >
                 Batal
               </button>
