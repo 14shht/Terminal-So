@@ -41,7 +41,7 @@ export async function GET() {
     return NextResponse.json({
       session: {
         startedAt: control.startTime ?? now,
-        durationMinutes: 90,
+        durationMinutes: 45,
         expiresAt: control.endTime ?? now,
         remainingSeconds,
         endedAt: submitted.submittedAt,

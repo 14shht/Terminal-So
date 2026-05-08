@@ -96,7 +96,10 @@ export default function LoginPage() {
   return (
     <main
       ref={rootRef}
-      className="min-h-screen bg-[linear-gradient(160deg,#ece9e4_0%,#f4f3f1_45%,#ebe8e2_100%)] p-4 text-zinc-900 md:p-8"
+      className="min-h-screen select-none bg-[linear-gradient(160deg,#ece9e4_0%,#f4f3f1_45%,#ebe8e2_100%)] p-4 text-zinc-900 md:p-8"
+      onCopy={(event) => event.preventDefault()}
+      onCut={(event) => event.preventDefault()}
+      onDragStart={(event) => event.preventDefault()}
     >
       <div data-animate="login-card" className="mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-6xl overflow-visible bg-transparent md:min-h-[calc(100vh-4rem)] lg:overflow-hidden">
         <aside
@@ -132,7 +135,7 @@ export default function LoginPage() {
             </p>
             <p className="flex items-start gap-3">
               <span className="mt-1 h-2 w-2 rounded-full bg-orange-400" />
-              Waktu ujian: 90 menit
+              Waktu ujian: 45 menit
             </p>
           </div>
         </aside>
@@ -145,7 +148,8 @@ export default function LoginPage() {
               width={220}
               height={220}
               priority
-              className="h-auto w-[175px] sm:w-[205px]"
+              draggable={false}
+              className="pointer-events-none h-auto w-[175px] sm:w-[205px]"
             />
           </div>
           <h1 className="text-4xl font-semibold tracking-tight text-zinc-900">Selamat datang</h1>
@@ -157,7 +161,7 @@ export default function LoginPage() {
                 Username / NPM
               </label>
               <input
-                className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-zinc-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                className="w-full select-text rounded-lg border border-zinc-300 bg-white px-4 py-3 text-zinc-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
                 placeholder="Masukkan NPM kamu"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
@@ -170,7 +174,7 @@ export default function LoginPage() {
               </label>
               <input
                 type={showPassword ? "text" : "password"}
-                className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 pr-20 text-zinc-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                className="w-full select-text rounded-lg border border-zinc-300 bg-white px-4 py-3 pr-20 text-zinc-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
                 placeholder="••••••••"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}

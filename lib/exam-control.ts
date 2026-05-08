@@ -23,7 +23,7 @@ export type GlobalExamControl = {
   updatedAt: string;
 };
 
-const DEFAULT_DURATION_MINUTES = 90;
+const DEFAULT_DURATION_MINUTES = 45;
 
 const toControl = (row: GlobalExamControlRow): GlobalExamControl => ({
   status: row.status,

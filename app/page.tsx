@@ -459,7 +459,7 @@ function HomeContent() {
   const [, setMonitoringDebugInfo] = useState<string>("");
   const [storedMonitoredStudentId, setStoredMonitoredStudentId] = useState("");
   const [storedMonitoredStudentUsername, setStoredMonitoredStudentUsername] = useState("");
-  const [remainingSeconds, setRemainingSeconds] = useState<number>(90 * 60);
+  const [remainingSeconds, setRemainingSeconds] = useState<number>(45 * 60);
   const [timeExpired, setTimeExpired] = useState(false);
   const [globalExamStatus, setGlobalExamStatus] = useState<
     "NOT_STARTED" | "SCHEDULED" | "RUNNING" | "PAUSED" | "ENDED"

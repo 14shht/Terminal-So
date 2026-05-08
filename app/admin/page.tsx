@@ -73,7 +73,7 @@ export default function AdminPage() {
   const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const [examDurationMinutes] = useState(90);
+  const [examDurationMinutes] = useState(45);
   const [updatingTimerUserId, setUpdatingTimerUserId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<AppToast[]>([]);
   const [confirmDeleteSubmissionId, setConfirmDeleteSubmissionId] = useState<string | null>(null);

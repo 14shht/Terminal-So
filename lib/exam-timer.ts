@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from "@/lib/supabase-server";
 
-export const DEFAULT_EXAM_DURATION_MINUTES = 90;
+export const DEFAULT_EXAM_DURATION_MINUTES = 45;
 export const MIN_EXAM_DURATION_MINUTES = 15;
 export const MAX_EXAM_DURATION_MINUTES = 300;
 
