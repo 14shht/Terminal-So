@@ -15,6 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Ujian Praktikum Sistem Operasi",
   description: "Simulator terminal Ubuntu untuk praktikum Sistem Operasi",
+  icons: {
+    icon: "/logo-labti.png",
+    shortcut: "/logo-labti.png",
+    apple: "/logo-labti.png",
+  },
 };
 
 export default function RootLayout({
