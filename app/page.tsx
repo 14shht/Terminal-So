@@ -230,6 +230,7 @@ const renderShellOutputWithInputs = (
       env[assignMatch[1]] = rawValue.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "");
     }
   }
+  const effectiveCode = applyShellIfElseBranches(sourceCode, env);
 
   const isShellControlLine = (line: string) => {
     const trimmed = line.trim();
@@ -242,7 +243,8 @@ const renderShellOutputWithInputs = (
     return false;
   };
 
-  return tailOutputTemplates
+  const templateSource = tailOutputTemplates.length > 0 ? tailOutputTemplates : effectiveCode.split("\n");
+  return templateSource
     .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? ""))
     .map((line) => line.replace(/^echo\s+/, "").trim())
     .filter((line) => !isShellControlLine(line))
@@ -252,6 +254,106 @@ const renderShellOutputWithInputs = (
 const parsePrintfLines = (content: string): string[] => {
   const matches = [...content.matchAll(/printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g)];
   return matches.map((match) => match[1].replace(/\\n/g, "").trim()).filter(Boolean);
+};
+
+const splitCArgs = (argsRaw: string): string[] => {
+  const args: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of argsRaw) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      const value = current.trim();
+      if (value) args.push(value);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const tail = current.trim();
+  if (tail) args.push(tail);
+  return args;
+};
+
+const toNumber = (value: string): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const evaluateCExpression = (expr: string, env: Record<string, number>): number => {
+  const replaced = expr.replace(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g, (name) => `${env[name] ?? 0}`);
+  if (!/^[0-9+\-*/%().\s<>=!&|]+$/.test(replaced)) return 0;
+  try {
+    const result = Function(`"use strict"; return (${replaced});`)();
+    return typeof result === "number" && Number.isFinite(result) ? result : 0;
+  } catch {
+    return 0;
+  }
+};
+
+const evaluateShellCondition = (rawCondition: string, env: Record<string, string>): boolean => {
+  const normalized = rawCondition
+    .replace(/^\[\[?\s*/, "")
+    .replace(/\s*\]\]?$/, "")
+    .trim()
+    .replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "");
+
+  const cmpMatch = normalized.match(/^(.+?)\s+(-eq|-ne|-gt|-ge|-lt|-le|==|!=|=)\s+(.+)$/);
+  if (!cmpMatch) {
+    return normalized.length > 0 && normalized !== "0";
+  }
+
+  const leftRaw = cmpMatch[1].trim().replace(/^['"]|['"]$/g, "");
+  const op = cmpMatch[2];
+  const rightRaw = cmpMatch[3].trim().replace(/^['"]|['"]$/g, "");
+  const leftNum = Number(leftRaw);
+  const rightNum = Number(rightRaw);
+  const bothNumeric = Number.isFinite(leftNum) && Number.isFinite(rightNum);
+
+  if (op === "==" || op === "=") return leftRaw === rightRaw;
+  if (op === "!=") return leftRaw !== rightRaw;
+  if (!bothNumeric) return false;
+  if (op === "-eq") return leftNum === rightNum;
+  if (op === "-ne") return leftNum !== rightNum;
+  if (op === "-gt") return leftNum > rightNum;
+  if (op === "-ge") return leftNum >= rightNum;
+  if (op === "-lt") return leftNum < rightNum;
+  if (op === "-le") return leftNum <= rightNum;
+  return false;
+};
+
+const applyShellIfElseBranches = (sourceCode: string, env: Record<string, string>): string => {
+  let next = sourceCode;
+  const ifElseRegex = /if\s+(?:\[\[?\s*([^\]\n]+)\s*\]\]?|(.+?))\s*;\s*then\s*([\s\S]*?)\s*else\s*([\s\S]*?)\s*fi/g;
+  next = next.replace(ifElseRegex, (_m, condBracket: string, condInline: string, ifBody: string, elseBody: string) => {
+    const cond = (condBracket || condInline || "").trim();
+    return evaluateShellCondition(cond, env) ? ifBody : elseBody;
+  });
+
+  const ifOnlyRegex = /if\s+(?:\[\[?\s*([^\]\n]+)\s*\]\]?|(.+?))\s*;\s*then\s*([\s\S]*?)\s*fi/g;
+  next = next.replace(ifOnlyRegex, (_m, condBracket: string, condInline: string, ifBody: string) => {
+    const cond = (condBracket || condInline || "").trim();
+    return evaluateShellCondition(cond, env) ? ifBody : "";
+  });
+  return next;
+};
+
+const evaluateCCondition = (condition: string, env: Record<string, number>): boolean => {
+  return Boolean(evaluateCExpression(condition, env));
+};
+
+const applyIfElseBranches = (content: string, env: Record<string, number>): string => {
+  let next = content;
+  const ifElseRegex = /if\s*\(([^)]+)\)\s*\{([\s\S]*?)\}\s*else\s*\{([\s\S]*?)\}/g;
+  next = next.replace(ifElseRegex, (_m, cond: string, ifBody: string, elseBody: string) =>
+    evaluateCCondition(cond, env) ? ifBody : elseBody,
+  );
+  const ifOnlyRegex = /if\s*\(([^)]+)\)\s*\{([\s\S]*?)\}/g;
+  next = next.replace(ifOnlyRegex, (_m, cond: string, ifBody: string) =>
+    evaluateCCondition(cond, env) ? ifBody : "",
+  );
+  return next;
 };
 
 const extractInteractivePrompts = (content: string): string[] => {
@@ -343,20 +445,49 @@ const extractDefaultCaseOutput = (content: string): string[] => {
 };
 
 const renderProgramOutputWithInputs = (content: string, answers: string[], prompts: string[]): string[] => {
-  const lines = parsePrintfLines(content);
   const promptSet = new Set(prompts);
-  let answerIndex = 0;
 
-  return lines
-    .map((line) =>
-      line.replace(/%[-+0-9.]*[a-zA-Z]/g, () => {
-        const answer = answers[answerIndex] ?? "";
-        answerIndex += 1;
-        return answer;
-      }),
-    )
-    .map((line) => line.trim())
-    .filter((line) => line && !promptSet.has(line));
+  const scanfVars = [...content.matchAll(/scanf\s*\(\s*"[^"]+"\s*,\s*&([a-zA-Z_][a-zA-Z0-9_]*)\s*\)/g)].map(
+    (m) => m[1],
+  );
+  const env: Record<string, number> = {};
+  scanfVars.forEach((name, index) => {
+    env[name] = toNumber(answers[index] ?? "0");
+  });
+
+  const effectiveContent = applyIfElseBranches(content, env);
+  const printfRegex = /printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*(?:,\s*([\s\S]*?))?\)\s*;/g;
+  const out: string[] = [];
+  let match: RegExpExecArray | null = printfRegex.exec(effectiveContent);
+
+  while (match) {
+    const format = match[1].replace(/\\n/g, "").trim();
+    const argsRaw = (match[2] ?? "").trim();
+    const args = argsRaw ? splitCArgs(argsRaw) : [];
+    let argIndex = 0;
+    const rendered = format.replace(/%[-+0-9.]*[a-zA-Z]/g, (token) => {
+      const expr = args[argIndex] ?? "0";
+      argIndex += 1;
+      const value = evaluateCExpression(expr, env);
+      const precisionMatch = token.match(/\.(\d+)/);
+      const conversion = token[token.length - 1]?.toLowerCase() ?? "f";
+      if (conversion === "d" || conversion === "i") {
+        return `${Math.trunc(value)}`;
+      }
+      if (precisionMatch) {
+        return value.toFixed(Number(precisionMatch[1]));
+      }
+      return `${value}`;
+    });
+
+    const line = rendered.trim();
+    if (line && !promptSet.has(line)) {
+      out.push(line);
+    }
+    match = printfRegex.exec(effectiveContent);
+  }
+
+  return out;
 };
 
 const buildInteractiveIntroLines = (sourceCode: string, prompt: string): string[] => {
