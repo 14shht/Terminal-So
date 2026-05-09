@@ -44,6 +44,9 @@ export async function POST(_: Request, { params }: Params) {
     if (error || !submission) {
       return NextResponse.json({ error: "Submission tidak ditemukan." }, { status: 404 });
     }
+    const submissionUsername =
+      String((submission as { username?: string | null; student_username?: string | null }).username ?? "").trim() ||
+      String((submission as { username?: string | null; student_username?: string | null }).student_username ?? "").trim();
 
     const latestCode = String(submission.code ?? "");
     if (!latestCode.trim()) {
@@ -124,6 +127,3 @@ export async function POST(_: Request, { params }: Params) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
-    const submissionUsername =
-      String((submission as { username?: string | null; student_username?: string | null }).username ?? "").trim() ||
-      String((submission as { username?: string | null; student_username?: string | null }).student_username ?? "").trim();
