@@ -37,7 +37,7 @@ export async function POST(_: Request, { params }: Params) {
 
     const { data: submission, error } = await supabaseAdmin
       .from("submissions")
-      .select("id, user_id, username, file_name, code, submitted_at")
+      .select("id, user_id, username, student_username, file_name, code, submitted_at")
       .eq("id", submissionId)
       .single();
 
@@ -70,7 +70,7 @@ export async function POST(_: Request, { params }: Params) {
         run_id: runId,
         submission_id: submission.id,
         user_id: submission.user_id ?? "",
-        username: submission.username ?? "",
+        username: submissionUsername,
         language,
         source_filename: sourceFilename,
         source_path: sourcePath,
@@ -99,7 +99,7 @@ export async function POST(_: Request, { params }: Params) {
             command: "load-terminal",
             output: [
               `submission_id: ${submission.id}`,
-              `username: ${submission.username ?? "-"}`,
+              `username: ${submissionUsername || "-"}`,
               `language: ${language}`,
               `run_id: ${runId}`,
               `workspace: ${workspacePath}`,
@@ -116,7 +116,7 @@ export async function POST(_: Request, { params }: Params) {
         submitted: false,
         layoutMode: "terminal",
         monitoredStudentId: submission.user_id ?? "",
-        monitoredStudentUsername: submission.username ?? "",
+        monitoredStudentUsername: submissionUsername,
       },
     });
   } catch (error) {
@@ -124,3 +124,6 @@ export async function POST(_: Request, { params }: Params) {
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
+    const submissionUsername =
+      String((submission as { username?: string | null; student_username?: string | null }).username ?? "").trim() ||
+      String((submission as { username?: string | null; student_username?: string | null }).student_username ?? "").trim();

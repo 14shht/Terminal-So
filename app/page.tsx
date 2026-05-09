@@ -859,7 +859,7 @@ function HomeContent() {
       setTerminalInput("");
       setStoredMonitoredStudentId(data.terminalState.monitoredStudentId ?? "");
       setStoredMonitoredStudentUsername(data.terminalState.monitoredStudentUsername ?? "");
-      setLayoutMode("terminal");
+      setLayoutMode("split");
       setMonitoringDebugInfo(
         `Loaded submission_id=${data.run.submission_id} run_id=${data.run.run_id} code_hash=${data.run.code_hash} query_run_id=${adminRunId || "-"}`,
       );
@@ -1966,8 +1966,8 @@ function HomeContent() {
       ? (effectiveAdminStudentId || effectiveAdminStudentUsername ? monitoredQuestionPdfUrl : null)
       : (user.questionPdfUrl ?? null);
   const hasQuestionPdf = Boolean(previewQuestionPdfUrl);
-  const showQuestionPanel = !showExamActions || layoutMode === "split" || layoutMode === "pdf";
-  const showTerminalPanel = !showExamActions || layoutMode === "split" || layoutMode === "terminal";
+  const showQuestionPanel = layoutMode === "split" || layoutMode === "pdf";
+  const showTerminalPanel = layoutMode === "split" || layoutMode === "terminal";
   const previewPanelHeightClass =
     layoutMode === "split"
       ? "h-full min-h-0"
