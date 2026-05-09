@@ -287,6 +287,34 @@ const extractPreScanfPrintfLines = (content: string): string[] => {
   return prePromptLines;
 };
 
+const detectMenuExitChoice = (content: string): string | null => {
+  const caseRegex = /case\s+(\d+)\s*:\s*([\s\S]*?)(?:break\s*;|return\s+\d+\s*;)/g;
+  let match: RegExpExecArray | null = caseRegex.exec(content);
+  while (match) {
+    const choice = match[1];
+    const body = match[2] ?? "";
+    if (/exit|program\s+selesai/i.test(body)) {
+      return choice;
+    }
+    match = caseRegex.exec(content);
+  }
+  return null;
+};
+
+const extractCasePrintfLines = (content: string, choice: string): string[] => {
+  const caseRegex = new RegExp(
+    `case\\s+${choice}\\s*:\\s*([\\s\\S]*?)(?:break\\s*;|return\\s+\\d+\\s*;)`,
+    "i",
+  );
+  const caseMatch = content.match(caseRegex);
+  if (!caseMatch) return [];
+  const body = caseMatch[1] ?? "";
+  const matches = [...body.matchAll(/printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g)];
+  return matches
+    .map((m) => m[1].replace(/\\n/g, "").trim())
+    .filter(Boolean);
+};
+
 const renderProgramOutputWithInputs = (content: string, answers: string[], prompts: string[]): string[] => {
   const lines = parsePrintfLines(content);
   const promptSet = new Set(prompts);
@@ -1085,6 +1113,16 @@ function HomeContent() {
 
       const nextAnswers = [...interactiveRun.answers, rawInput.trim()];
       pushEntry(rawInput.trim(), [], promptAtCommand);
+
+      if (interactiveRun.mode === "c" && interactiveRun.answers.length === 0) {
+        const exitChoice = detectMenuExitChoice(interactiveRun.sourceCode);
+        if (exitChoice && rawInput.trim() === exitChoice) {
+          const exitLines = extractCasePrintfLines(interactiveRun.sourceCode, exitChoice);
+          pushEntry("(program output)", exitLines.length ? exitLines : ["Program selesai."], promptAtCommand);
+          setInteractiveRun(null);
+          return;
+        }
+      }
 
       if (nextAnswers.length < interactiveRun.prompts.length) {
         pushEntry("(stdin)", [interactiveRun.prompts[nextAnswers.length]], promptAtCommand);
