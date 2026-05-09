@@ -458,7 +458,7 @@ const renderProgramOutputWithInputs = (content: string, answers: string[], promp
     env[name] = toNumber(answers[index] ?? "0");
   });
 
-  const assignmentRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^;]+);/g;
+  const assignmentRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=(?!=)\s*([^;]+);/g;
   let assignMatch: RegExpExecArray | null = assignmentRegex.exec(content);
   while (assignMatch) {
     const varName = assignMatch[1];
