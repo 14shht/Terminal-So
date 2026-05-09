@@ -222,7 +222,6 @@ const renderShellOutputWithInputs = (
   prompts: string[],
   inputVars: string[],
   answers: string[],
-  tailOutputTemplates: string[],
 ): string[] => {
   const env: Record<string, string> = {};
   inputVars.forEach((key, index) => {
@@ -269,7 +268,7 @@ const renderShellOutputWithInputs = (
     return false;
   };
 
-  const templateSource = tailOutputTemplates.length > 0 ? tailOutputTemplates : effectiveCode.split("\n");
+  const templateSource = effectiveCode.split("\n");
   return templateSource
     .map((line) => evaluateShellInlineAwk(line, env))
     .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "0"))
@@ -1501,7 +1500,6 @@ function HomeContent() {
               selected.prompts,
               parsedCase?.inputVars ?? [],
               nextCaseAnswers,
-              parsedCase?.tailOutputTemplates ?? [],
             )
           : ["Pilihan tidak tersedia."];
         pushEntry("(program output)", caseOutput.length ? caseOutput : ["(tidak ada output)"], promptAtCommand);
@@ -1531,7 +1529,6 @@ function HomeContent() {
               interactiveRun.prompts,
               interactiveRun.shellVars ?? [],
               nextAnswers,
-              interactiveRun.shellOutputTemplates ?? [],
             );
       pushEntry("(program output)", finalLines.length > 0 ? finalLines : ["(tidak ada output)"], promptAtCommand);
       setInteractiveRun(null);
