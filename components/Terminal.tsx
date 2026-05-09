@@ -194,12 +194,15 @@ export function Terminal({
           </div>
         ) : null}
 
+        <div ref={endRef} />
+      </div>
+      <div className="border-t border-zinc-800 bg-black px-4 py-2">
         {readOnly ? (
-          <div className="mt-2 rounded-md border border-zinc-700/80 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-400">
+          <div className="rounded-md border border-zinc-700/80 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-400">
             Input terminal dinonaktifkan (read-only).
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="mt-2 flex items-center gap-2">
+          <form onSubmit={handleSubmit} className="flex items-center gap-2">
             {stdinMode ? (
               <label htmlFor="terminal-input" className="text-yellow-300">
                 stdin&gt;
@@ -230,7 +233,6 @@ export function Terminal({
         {stdinMode ? (
           <p className="mt-1 text-xs text-yellow-300">Mode input program aktif. Ketik jawaban lalu Enter.</p>
         ) : null}
-        <div ref={endRef} />
       </div>
     </section>
   );
