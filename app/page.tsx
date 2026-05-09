@@ -458,6 +458,17 @@ const renderProgramOutputWithInputs = (content: string, answers: string[], promp
     env[name] = toNumber(answers[index] ?? "0");
   });
 
+  const assignmentRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([^;]+);/g;
+  let assignMatch: RegExpExecArray | null = assignmentRegex.exec(content);
+  while (assignMatch) {
+    const varName = assignMatch[1];
+    const expr = assignMatch[2].trim();
+    if (!/^scanf\s*\(/.test(expr)) {
+      env[varName] = evaluateCExpression(expr, env);
+    }
+    assignMatch = assignmentRegex.exec(content);
+  }
+
   const effectiveContent = applyIfElseBranches(content, env);
   const printfRegex = /printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"\s*(?:,\s*([\s\S]*?))?\)\s*;/g;
   const out: string[] = [];
