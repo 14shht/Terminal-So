@@ -59,65 +59,35 @@ export default function SubmissionDetailPage() {
     router.replace("/login");
   };
 
-  const loadToTerminal = () => {
+  const loadToTerminal = async () => {
     if (typeof window === "undefined" || !submission) {
       return;
     }
-
-    const HOME_DIR = "/home/student";
-    const storageKey = "ubuntu-web-lab-state-admin";
-    const filePath =
-      (submission as SubmissionRecord & { file_path?: string }).file_path?.trim() || `${HOME_DIR}/main.c`;
-    const normalizedPath = filePath.startsWith("/") ? filePath : `${HOME_DIR}/${filePath}`;
-    const pathParts = normalizedPath.split("/").filter(Boolean);
-    const parentDir =
-      pathParts.length > 1 ? `/${pathParts.slice(0, -1).join("/")}` : HOME_DIR;
-    const folders = [HOME_DIR];
-    if (parentDir !== HOME_DIR) {
-      folders.push(parentDir);
+    const loadResponse = await fetch(`/api/admin/submissions/${id}/load-terminal`, {
+      method: "POST",
+      cache: "no-store",
+    });
+    const loadData = (await loadResponse.json().catch(() => null)) as
+      | { run?: { run_id?: string; username?: string; user_id?: string } ; error?: string }
+      | null;
+    if (!loadResponse.ok || !loadData?.run?.run_id) {
+      const message = loadData?.error || "Gagal memuat terminal dari submission terbaru.";
+      setError(message);
+      return;
     }
-    const code = (submission as SubmissionRecord & { code?: string }).code || "";
 
-    const monitoredUsername =
-      (submission as SubmissionRecord & { student_username?: string }).username ||
-      (submission as SubmissionRecord & { student_username?: string }).student_username ||
-      "";
-
-    const payload = {
-      currentDir: parentDir,
-      folders,
-      files: [
-        {
-          name: normalizedPath,
-          content: code,
-          type: "file",
-          executable: false,
-        },
-      ],
-      entries: [
-        {
-          id: `seed-${Date.now()}`,
-          prompt: "admin@ubuntu:~$",
-          command: "load-submission",
-          output: [
-            `Loaded submission file: ${normalizedPath}`,
-            `Current dir: ${parentDir}`,
-            `Jalankan compile: gcc ${pathParts[pathParts.length - 1]} -o out lalu ./out`,
-          ],
-        },
-      ],
-      submitted: false,
-      monitoredStudentId: submission.user_id ?? "",
-      monitoredStudentUsername: monitoredUsername,
-    };
-
-    window.localStorage.setItem(storageKey, JSON.stringify(payload));
     const backTo = `/admin/submissions/${id}`;
-    const studentId = submission.user_id ?? "";
-    const studentUsername = monitoredUsername;
+    const studentId = loadData.run.user_id ?? submission.user_id ?? "";
+    const studentUsername =
+      loadData.run.username ??
+      (submission as SubmissionRecord & { student_username?: string }).username ??
+      (submission as SubmissionRecord & { student_username?: string }).student_username ??
+      "";
     const query = new URLSearchParams({
       admin_terminal: "1",
       admin_return: backTo,
+      admin_submission_id: String(id),
+      admin_run_id: loadData.run.run_id,
       ...(studentId ? { admin_student_id: studentId } : {}),
       ...(studentUsername ? { admin_student_username: studentUsername } : {}),
     });
@@ -193,7 +163,9 @@ export default function SubmissionDetailPage() {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={loadToTerminal}
+                onClick={() => {
+                  void loadToTerminal();
+                }}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 hover:bg-blue-500"
               >
                 Load ke Terminal

@@ -25,16 +25,31 @@ type PersistedState = {
   monitoredStudentUsername?: string;
 };
 
+type AdminTerminalLoadResponse = {
+  run?: {
+    run_id: string;
+    submission_id: string;
+    user_id: string;
+    username: string;
+    language: "c" | "bash";
+    source_filename: string;
+    source_path: string;
+    workspace_path: string;
+    code_hash: string;
+    submission_updated_at: string;
+    compile_command: string;
+    run_command: string;
+    preview_lines: string[];
+  };
+  terminalState?: PersistedState;
+  error?: string;
+};
+
 type InteractiveRunState = {
   mode: "c" | "sh";
   prompts: string[];
   answers: string[];
   sourceCode: string;
-  isMenuProgram?: boolean;
-  menuStage?: "choice" | "luas_panjang" | "luas_lebar" | "ganjil_angka" | "suhu_c";
-  menuData?: {
-    panjang?: number;
-  };
   shellVars?: string[];
   shellOutputTemplates?: string[];
 };
@@ -230,23 +245,6 @@ const parsePrintfLines = (content: string): string[] => {
   return matches.map((match) => match[1].replace(/\\n/g, "").trim()).filter(Boolean);
 };
 
-const isMenuProgramContent = (content: string) =>
-  /Masukkan pilihan/i.test(content) &&
-  /(Biodata|Luas|Ganjil|Genap|Konversi|Exit)/i.test(content);
-
-const buildMenuLines = (prompt = "Masukkan pilihan [1-5]:") => [
-  "==============================",
-  "        MENU PROGRAM C",
-  "==============================",
-  "1. Biodata",
-  "2. Luas Persegi Panjang",
-  "3. Cek Ganjil / Genap",
-  "4. Konversi Suhu",
-  "5. Exit",
-  "==============================",
-  prompt,
-];
-
 const extractInteractivePrompts = (content: string): string[] => {
   const lines = content.split("\n");
   const prompts: string[] = [];
@@ -268,28 +266,6 @@ const extractInteractivePrompts = (content: string): string[] => {
 };
 
 const renderProgramOutputWithInputs = (content: string, answers: string[], prompts: string[]): string[] => {
-  const isMenuProgram = isMenuProgramContent(content);
-  if (isMenuProgram) {
-    const choice = (answers[0] ?? "").trim();
-    const menuLines = buildMenuLines();
-    if (choice === "1") {
-      return [...menuLines, "Nama : Praktikan", "NPM  : 12345678", "Kelas: TI-1A"];
-    }
-    if (choice === "2") {
-      return [...menuLines, "===== LUAS PERSEGI PANJANG =====", "Luas persegi panjang adalah: 1"];
-    }
-    if (choice === "3") {
-      return [...menuLines, "===== CEK GANJIL / GENAP =====", "10 adalah bilangan Genap"];
-    }
-    if (choice === "4") {
-      return [...menuLines, "===== KONVERSI SUHU =====", "10 derajat Celcius = 10 derajat Fahrenheit"];
-    }
-    if (choice === "5") {
-      return [...menuLines, "Program selesai. Terima kasih."];
-    }
-    return [...menuLines, "Pilihan tidak valid. Silakan pilih 1 sampai 5."];
-  }
-
   const lines = parsePrintfLines(content);
   const promptSet = new Set(prompts);
   let answerIndex = 0;
@@ -306,14 +282,7 @@ const renderProgramOutputWithInputs = (content: string, answers: string[], promp
     .filter((line) => line && !promptSet.has(line));
 };
 
-const buildMenuIntroLines = (content: string, prompt: string): string[] => {
-  const isMenuProgram = isMenuProgramContent(content);
-  if (!isMenuProgram) {
-    return ["Program menunggu input...", prompt];
-  }
-
-  return buildMenuLines(prompt);
-};
+const buildInteractiveIntroLines = (prompt: string): string[] => ["Program menunggu input...", prompt];
 
 const upsertFile = (files: FileSystemItem[], nextFile: FileSystemItem): FileSystemItem[] => {
   const idx = files.findIndex((item) => item.name === nextFile.name);
@@ -474,15 +443,19 @@ function HomeContent() {
   const adminReturnRaw = searchParams.get("admin_return");
   const adminStudentId = searchParams.get("admin_student_id");
   const adminStudentUsername = searchParams.get("admin_student_username");
+  const adminSubmissionIdParam = searchParams.get("admin_submission_id");
+  const adminRunId = searchParams.get("admin_run_id") ?? "";
   const adminReturnPath =
     adminReturnRaw && adminReturnRaw.startsWith("/admin/submissions/")
       ? adminReturnRaw
       : "/admin";
   const effectiveAdminStudentId = adminStudentId || storedMonitoredStudentId;
   const effectiveAdminStudentUsername = adminStudentUsername || storedMonitoredStudentUsername;
-  const adminSubmissionId = adminReturnPath.startsWith("/admin/submissions/")
-    ? adminReturnPath.replace("/admin/submissions/", "").split("?")[0]
-    : "";
+  const adminSubmissionId =
+    adminSubmissionIdParam ||
+    (adminReturnPath.startsWith("/admin/submissions/")
+      ? adminReturnPath.replace("/admin/submissions/", "").split("?")[0]
+      : "");
 
   useEffect(() => {
     const loadMe = async () => {
@@ -552,6 +525,41 @@ function HomeContent() {
     }, 5000);
     return () => clearInterval(poll);
   }, [user]);
+
+  useEffect(() => {
+    if (!user || user.role !== "admin" || !allowAdminTerminal || !adminSubmissionId) {
+      return;
+    }
+
+    const loadAdminTerminalState = async () => {
+      const response = await fetch(`/api/admin/submissions/${adminSubmissionId}/load-terminal`, {
+        method: "POST",
+        cache: "no-store",
+        headers: { "cache-control": "no-store" },
+      });
+      const data = (await response.json().catch(() => null)) as AdminTerminalLoadResponse | null;
+      if (!response.ok || !data?.terminalState || !data?.run) {
+        setToast(data?.error || "Gagal load terminal submission terbaru.");
+        return;
+      }
+
+      setCurrentDir(data.terminalState.currentDir);
+      setFolders(data.terminalState.folders);
+      setFiles(data.terminalState.files);
+      setEntries(data.terminalState.entries);
+      setSubmitted(false);
+      setInteractiveRun(null);
+      setTerminalInput("");
+      setStoredMonitoredStudentId(data.terminalState.monitoredStudentId ?? "");
+      setStoredMonitoredStudentUsername(data.terminalState.monitoredStudentUsername ?? "");
+      setLayoutMode("terminal");
+      setMonitoringDebugInfo(
+        `Loaded submission_id=${data.run.submission_id} run_id=${data.run.run_id} code_hash=${data.run.code_hash} query_run_id=${adminRunId || "-"}`,
+      );
+    };
+
+    void loadAdminTerminalState();
+  }, [user, allowAdminTerminal, adminSubmissionId, adminRunId]);
 
   useEffect(() => {
     if (!user || user.role !== "admin" || !allowAdminTerminal) {
@@ -690,10 +698,13 @@ function HomeContent() {
     if (!user || typeof window === "undefined") {
       return;
     }
+    if (user.role === "admin" && allowAdminTerminal) {
+      return;
+    }
 
     const payload: PersistedState = { currentDir, folders, files, entries, submitted, layoutMode };
     window.localStorage.setItem(getStorageKey(user.username), JSON.stringify(payload));
-  }, [currentDir, folders, files, entries, submitted, layoutMode, user]);
+  }, [currentDir, folders, files, entries, submitted, layoutMode, user, allowAdminTerminal]);
 
   useEffect(() => {
     if (!toast) {
@@ -1041,110 +1052,6 @@ function HomeContent() {
       const nextAnswers = [...interactiveRun.answers, rawInput.trim()];
       pushEntry(rawInput.trim(), [], promptAtCommand);
 
-      if (interactiveRun.isMenuProgram) {
-        const value = rawInput.trim();
-        const stage = interactiveRun.menuStage ?? "choice";
-
-        if (stage === "choice") {
-          if (value === "1") {
-            pushEntry("(program output)", ["Nama : Praktikan", "NPM  : 12345678", "Kelas: TI-1A"], promptAtCommand);
-            pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
-            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
-            return;
-          }
-          if (value === "2") {
-            pushEntry("(program output)", ["===== LUAS PERSEGI PANJANG ====="], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan panjang:"], promptAtCommand);
-            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "luas_panjang", menuData: {} });
-            return;
-          }
-          if (value === "3") {
-            pushEntry("(program output)", ["===== CEK GANJIL / GENAP ====="], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan angka:"], promptAtCommand);
-            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "ganjil_angka", menuData: {} });
-            return;
-          }
-          if (value === "4") {
-            pushEntry("(program output)", ["===== KONVERSI SUHU ====="], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan suhu Celsius:"], promptAtCommand);
-            setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "suhu_c", menuData: {} });
-            return;
-          }
-          if (value === "5") {
-            pushEntry("(program output)", ["Program selesai. Terima kasih."], promptAtCommand);
-            setInteractiveRun(null);
-            return;
-          }
-          pushEntry("(program output)", ["Pilihan tidak valid. Silakan pilih 1 sampai 5."], promptAtCommand);
-          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
-          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
-          return;
-        }
-
-        if (stage === "luas_panjang") {
-          const panjang = Number(value);
-          if (!Number.isFinite(panjang)) {
-            pushEntry("(program output)", ["Input panjang tidak valid."], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan panjang:"], promptAtCommand);
-            return;
-          }
-          pushEntry("(stdin)", ["Masukkan lebar:"], promptAtCommand);
-          setInteractiveRun({
-            ...interactiveRun,
-            answers: [],
-            menuStage: "luas_lebar",
-            menuData: { panjang },
-          });
-          return;
-        }
-
-        if (stage === "luas_lebar") {
-          const lebar = Number(value);
-          const panjangValue = interactiveRun.menuData?.panjang ?? Number.NaN;
-          if (!Number.isFinite(lebar) || !Number.isFinite(panjangValue)) {
-            pushEntry("(program output)", ["Input lebar tidak valid."], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan lebar:"], promptAtCommand);
-            return;
-          }
-          pushEntry("(program output)", [`Luas persegi panjang adalah: ${panjangValue * lebar}`], promptAtCommand);
-          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
-          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
-          return;
-        }
-
-        if (stage === "ganjil_angka") {
-          const angka = Number(value);
-          if (!Number.isFinite(angka)) {
-            pushEntry("(program output)", ["Input angka tidak valid."], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan angka:"], promptAtCommand);
-            return;
-          }
-          const label = angka % 2 === 0 ? "Genap" : "Ganjil";
-          pushEntry("(program output)", [`${angka} adalah bilangan ${label}`], promptAtCommand);
-          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
-          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
-          return;
-        }
-
-        if (stage === "suhu_c") {
-          const celsius = Number(value);
-          if (!Number.isFinite(celsius)) {
-            pushEntry("(program output)", ["Input suhu tidak valid."], promptAtCommand);
-            pushEntry("(stdin)", ["Masukkan suhu Celsius:"], promptAtCommand);
-            return;
-          }
-          const fahrenheit = (celsius * 9) / 5 + 32;
-          pushEntry(
-            "(program output)",
-            [`${celsius} derajat Celcius = ${fahrenheit} derajat Fahrenheit`],
-            promptAtCommand,
-          );
-          pushEntry("(stdin)", buildMenuLines(interactiveRun.prompts[0]), promptAtCommand);
-          setInteractiveRun({ ...interactiveRun, answers: [], menuStage: "choice", menuData: {} });
-          return;
-        }
-      }
-
       if (nextAnswers.length < interactiveRun.prompts.length) {
         pushEntry("(stdin)", [interactiveRun.prompts[nextAnswers.length]], promptAtCommand);
         setInteractiveRun({ ...interactiveRun, answers: nextAnswers });
@@ -1444,28 +1351,14 @@ function HomeContent() {
             [...shellFlow.initialOutput, shellFlow.prompts[0]].filter(Boolean),
             promptAtCommand,
           );
-          if (isMenuProgramContent(file.content)) {
-            setInteractiveRun({
-              mode: "sh",
-              prompts: [shellFlow.prompts[0]],
-              answers: [],
-              sourceCode: file.content,
-              isMenuProgram: true,
-              menuStage: "choice",
-              menuData: {},
-              shellVars: shellFlow.inputVars,
-              shellOutputTemplates: shellFlow.tailOutputTemplates,
-            });
-          } else {
-            setInteractiveRun({
-              mode: "sh",
-              prompts: shellFlow.prompts,
-              answers: [],
-              sourceCode: file.content,
-              shellVars: shellFlow.inputVars,
-              shellOutputTemplates: shellFlow.tailOutputTemplates,
-            });
-          }
+          setInteractiveRun({
+            mode: "sh",
+            prompts: shellFlow.prompts,
+            answers: [],
+            sourceCode: file.content,
+            shellVars: shellFlow.inputVars,
+            shellOutputTemplates: shellFlow.tailOutputTemplates,
+          });
           return;
         }
 
@@ -1483,20 +1376,8 @@ function HomeContent() {
       const sourceCode = source?.content || "";
       const prompts = extractInteractivePrompts(sourceCode);
       if (prompts.length > 0 && /scanf\s*\(/.test(sourceCode)) {
-        pushEntry(command, buildMenuIntroLines(sourceCode, prompts[0]), promptAtCommand);
-        if (isMenuProgramContent(sourceCode)) {
-          setInteractiveRun({
-            mode: "c",
-            prompts: [prompts[0]],
-            answers: [],
-            sourceCode,
-            isMenuProgram: true,
-            menuStage: "choice",
-            menuData: {},
-          });
-        } else {
-          setInteractiveRun({ mode: "c", prompts, answers: [], sourceCode });
-        }
+        pushEntry(command, buildInteractiveIntroLines(prompts[0]), promptAtCommand);
+        setInteractiveRun({ mode: "c", prompts, answers: [], sourceCode });
         return;
       }
 
