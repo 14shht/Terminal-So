@@ -270,6 +270,7 @@ const renderShellOutputWithInputs = (
 
   const templateSource = effectiveCode.split("\n");
   return templateSource
+    .map((line) => line.trim())
     .map((line) => evaluateShellInlineAwk(line, env))
     .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "0"))
     .map((line) => line.replace(/^echo\s+(-n\s+)?/, "").trim())
