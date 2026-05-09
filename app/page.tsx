@@ -265,6 +265,28 @@ const extractInteractivePrompts = (content: string): string[] => {
   return prompts;
 };
 
+const extractPreScanfPrintfLines = (content: string): string[] => {
+  const lines = content.split("\n");
+  const prePromptLines: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/scanf\s*\(/.test(line)) {
+      break;
+    }
+    const printfMatch = line.match(/printf\s*\(\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+    if (!printfMatch) {
+      continue;
+    }
+    const text = printfMatch[1].replace(/\\n/g, "").trim();
+    if (text) {
+      prePromptLines.push(text);
+    }
+  }
+
+  return prePromptLines;
+};
+
 const renderProgramOutputWithInputs = (content: string, answers: string[], prompts: string[]): string[] => {
   const lines = parsePrintfLines(content);
   const promptSet = new Set(prompts);
@@ -282,7 +304,19 @@ const renderProgramOutputWithInputs = (content: string, answers: string[], promp
     .filter((line) => line && !promptSet.has(line));
 };
 
-const buildInteractiveIntroLines = (prompt: string): string[] => ["Program menunggu input...", prompt];
+const buildInteractiveIntroLines = (sourceCode: string, prompt: string): string[] => {
+  const prePromptLines = extractPreScanfPrintfLines(sourceCode);
+  if (prePromptLines.length === 0) {
+    return ["Program menunggu input...", prompt];
+  }
+
+  const lastLine = prePromptLines[prePromptLines.length - 1];
+  if (lastLine.includes(prompt)) {
+    return prePromptLines;
+  }
+
+  return [...prePromptLines, prompt];
+};
 
 const upsertFile = (files: FileSystemItem[], nextFile: FileSystemItem): FileSystemItem[] => {
   const idx = files.findIndex((item) => item.name === nextFile.name);
@@ -1376,7 +1410,7 @@ function HomeContent() {
       const sourceCode = source?.content || "";
       const prompts = extractInteractivePrompts(sourceCode);
       if (prompts.length > 0 && /scanf\s*\(/.test(sourceCode)) {
-        pushEntry(command, buildInteractiveIntroLines(prompts[0]), promptAtCommand);
+        pushEntry(command, buildInteractiveIntroLines(sourceCode, prompts[0]), promptAtCommand);
         setInteractiveRun({ mode: "c", prompts, answers: [], sourceCode });
         return;
       }
