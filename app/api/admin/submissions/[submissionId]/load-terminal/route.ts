@@ -59,7 +59,7 @@ export async function POST(_: Request, { params }: Params) {
     }
 
     const runId = randomUUID();
-    const workspacePath = `${HOME_DIR}/exam-runs/${submission.id}/${runId}`;
+    const workspacePath = HOME_DIR;
     const sourceFilename = language === "c" ? "main.c" : "main.sh";
     const sourcePath = `${workspacePath}/${sourceFilename}`;
     const compileCommand = language === "c" ? "rm -f program && gcc main.c -o program" : "chmod +x main.sh";
@@ -86,7 +86,7 @@ export async function POST(_: Request, { params }: Params) {
       },
       terminalState: {
         currentDir: workspacePath,
-        folders: [HOME_DIR, `${HOME_DIR}/exam-runs`, `${HOME_DIR}/exam-runs/${submission.id}`, workspacePath],
+        folders: [HOME_DIR],
         files: [
           {
             name: sourcePath,
@@ -95,27 +95,7 @@ export async function POST(_: Request, { params }: Params) {
             executable: language === "bash",
           },
         ],
-        entries: [
-          {
-            id: `seed-${Date.now()}`,
-            prompt: "admin@ubuntu:~$",
-            command: "load-terminal",
-            output: [
-              `submission_id: ${submission.id}`,
-              `username: ${submissionUsername || "-"}`,
-              `language: ${language}`,
-              `run_id: ${runId}`,
-              `workspace: ${workspacePath}`,
-              `source: ${sourceFilename}`,
-              `code_hash: ${codeHash}`,
-              `submission_updated_at: ${submissionUpdatedAt}`,
-              `compile: ${compileCommand}`,
-              `run: ${runCommand}`,
-              "preview:",
-              ...previewLines,
-            ],
-          },
-        ],
+        entries: [],
         submitted: false,
         layoutMode: "terminal",
         monitoredStudentId: submission.user_id ?? "",

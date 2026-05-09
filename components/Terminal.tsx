@@ -194,21 +194,22 @@ export function Terminal({
           </div>
         ) : null}
 
-        <div ref={endRef} />
-      </div>
-      <div className="border-t border-zinc-800 bg-black px-4 py-2">
         {readOnly ? (
-          <div className="rounded-md border border-zinc-700/80 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-400">
+          <div className="mt-2 rounded-md border border-zinc-700/80 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-400">
             Input terminal dinonaktifkan (read-only).
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="flex items-center gap-2">
+          <form onSubmit={handleSubmit} className="mt-2 flex items-center gap-2">
             {stdinMode ? (
-              <label htmlFor="terminal-input" className="text-yellow-300">
+              <label htmlFor="terminal-input" className="shrink-0 text-yellow-300">
                 stdin&gt;
               </label>
             ) : (
-              <label htmlFor="terminal-input" className="text-zinc-100">
+              <label
+                htmlFor="terminal-input"
+                className="max-w-[65%] shrink overflow-hidden text-ellipsis whitespace-nowrap text-zinc-100"
+                title={prompt.replace(`${username}@ubuntu`, "")}
+              >
                 <span className="text-green-400">{username}@ubuntu</span>
                 {prompt.replace(`${username}@ubuntu`, "")}
               </label>
@@ -216,7 +217,7 @@ export function Terminal({
             <input
               id="terminal-input"
               ref={inputRef}
-              className="flex-1 w-full min-w-0 bg-transparent text-zinc-100 outline-none caret-zinc-100"
+              className="w-full min-w-[120px] flex-1 bg-transparent text-zinc-100 outline-none caret-zinc-100"
               value={inputValue}
               onChange={(event) => onInputChange(event.target.value)}
               onKeyDown={handleInputKeyDown}
@@ -233,6 +234,7 @@ export function Terminal({
         {stdinMode ? (
           <p className="mt-1 text-xs text-yellow-300">Mode input program aktif. Ketik jawaban lalu Enter.</p>
         ) : null}
+        <div ref={endRef} />
       </div>
     </section>
   );
