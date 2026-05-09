@@ -59,6 +59,15 @@ type InteractiveRunState = {
     selectedChoice?: string;
     caseAnswers?: string[];
   };
+  shMenuModel?: {
+    menuLines: string[];
+    choices: Record<string, { body: string; prompts: string[]; outputLines: string[] }>;
+    defaultOutput: string[];
+    exitChoice: string | null;
+    stage: "choice" | "case_inputs";
+    selectedChoice?: string;
+    caseAnswers?: string[];
+  };
   shellVars?: string[];
   shellOutputTemplates?: string[];
 };
@@ -340,6 +349,36 @@ const applyShellIfElseBranches = (sourceCode: string, env: Record<string, string
     return evaluateShellCondition(cond, env) ? ifBody : "";
   });
   return next;
+};
+
+const extractShellCaseBlocks = (sourceCode: string): Record<string, string> => {
+  const caseMatch = sourceCode.match(/case\s+["']?\$[a-zA-Z_][a-zA-Z0-9_]*["']?\s+in([\s\S]*?)esac/);
+  if (!caseMatch) return {};
+  const body = caseMatch[1] ?? "";
+  const blocks: Record<string, string> = {};
+  const blockRegex = /([^\)\n|]+(?:\|[^\)\n|]+)*)\)\s*([\s\S]*?)\s*;;/g;
+  let match: RegExpExecArray | null = blockRegex.exec(body);
+  while (match) {
+    const labels = (match[1] ?? "")
+      .split("|")
+      .map((v) => v.trim().replace(/^['"]|['"]$/g, ""))
+      .filter(Boolean);
+    const blockBody = match[2] ?? "";
+    labels.forEach((label) => {
+      blocks[label] = blockBody;
+    });
+    match = blockRegex.exec(body);
+  }
+  return blocks;
+};
+
+const extractShellCaseDefaultOutput = (sourceCode: string): string[] => {
+  const caseMatch = sourceCode.match(/case\s+["']?\$[a-zA-Z_][a-zA-Z0-9_]*["']?\s+in([\s\S]*?)esac/);
+  if (!caseMatch) return ["Pilihan tidak tersedia."];
+  const body = caseMatch[1] ?? "";
+  const defaultMatch = body.match(/\*\)\s*([\s\S]*?)\s*;;/);
+  if (!defaultMatch) return ["Pilihan tidak tersedia."];
+  return parseEchoLines(defaultMatch[1] ?? "");
 };
 
 const evaluateCCondition = (condition: string, env: Record<string, number>): boolean => {
@@ -1361,6 +1400,80 @@ function HomeContent() {
         return;
       }
 
+      if (interactiveRun.mode === "sh" && interactiveRun.shMenuModel) {
+        const model = interactiveRun.shMenuModel;
+
+        if (model.stage === "choice") {
+          const selected = model.choices[inputValue];
+          if (!selected) {
+            pushEntry("(program output)", model.defaultOutput, promptAtCommand);
+            pushEntry("(stdin)", model.menuLines, promptAtCommand);
+            setInteractiveRun({
+              ...interactiveRun,
+              shMenuModel: { ...model, stage: "choice", selectedChoice: undefined, caseAnswers: [] },
+              answers: [],
+              prompts: [],
+            });
+            return;
+          }
+
+          if (model.exitChoice && inputValue === model.exitChoice) {
+            const exitLines = selected.outputLines.length > 0 ? selected.outputLines : ["Program selesai."];
+            pushEntry("(program output)", exitLines, promptAtCommand);
+            setInteractiveRun(null);
+            return;
+          }
+
+          if (selected.prompts.length === 0) {
+            const caseOutput = selected.outputLines;
+            pushEntry("(program output)", caseOutput.length ? caseOutput : ["(tidak ada output)"], promptAtCommand);
+            pushEntry("(stdin)", model.menuLines, promptAtCommand);
+            setInteractiveRun({
+              ...interactiveRun,
+              shMenuModel: { ...model, stage: "choice", selectedChoice: undefined, caseAnswers: [] },
+              answers: [],
+              prompts: [],
+            });
+            return;
+          }
+
+          pushEntry("(stdin)", [selected.prompts[0]], promptAtCommand);
+          setInteractiveRun({
+            ...interactiveRun,
+            prompts: selected.prompts,
+            answers: [],
+            shMenuModel: { ...model, stage: "case_inputs", selectedChoice: inputValue, caseAnswers: [] },
+          });
+          return;
+        }
+
+        const nextCaseAnswers = [...(model.caseAnswers ?? []), inputValue];
+        if (nextCaseAnswers.length < interactiveRun.prompts.length) {
+          pushEntry("(stdin)", [interactiveRun.prompts[nextCaseAnswers.length]], promptAtCommand);
+          setInteractiveRun({
+            ...interactiveRun,
+            answers: nextCaseAnswers,
+            shMenuModel: { ...model, caseAnswers: nextCaseAnswers },
+          });
+          return;
+        }
+
+        const selectedChoice = model.selectedChoice ?? "";
+        const selected = model.choices[selectedChoice];
+        const caseOutput = selected
+          ? renderShellOutputWithInputs(selected.body, selected.prompts, [], nextCaseAnswers, selected.outputLines)
+          : ["Pilihan tidak tersedia."];
+        pushEntry("(program output)", caseOutput.length ? caseOutput : ["(tidak ada output)"], promptAtCommand);
+        pushEntry("(stdin)", model.menuLines, promptAtCommand);
+        setInteractiveRun({
+          ...interactiveRun,
+          prompts: [],
+          answers: [],
+          shMenuModel: { ...model, stage: "choice", selectedChoice: undefined, caseAnswers: [] },
+        });
+        return;
+      }
+
       const nextAnswers = [...interactiveRun.answers, inputValue];
 
       if (nextAnswers.length < interactiveRun.prompts.length) {
@@ -1662,6 +1775,41 @@ function HomeContent() {
             [...shellFlow.initialOutput, shellFlow.prompts[0]].filter(Boolean),
             promptAtCommand,
           );
+          const caseBlocks = extractShellCaseBlocks(file.content);
+          const hasMenuCase = Object.keys(caseBlocks).length > 0;
+          if (hasMenuCase) {
+            const choices = Object.fromEntries(
+              Object.entries(caseBlocks)
+                .filter(([label]) => label !== "*")
+                .map(([label, body]) => [
+                  label,
+                  {
+                    body,
+                    prompts: parseShellInteractiveScript(body).prompts,
+                    outputLines: parseEchoLines(body),
+                  },
+                ]),
+            );
+            const defaultOutput = extractShellCaseDefaultOutput(file.content);
+            const exitChoice =
+              Object.entries(caseBlocks).find(([, body]) => /exit|program\s+selesai/i.test(body))?.[0] ?? null;
+            const menuLines = [...shellFlow.initialOutput, shellFlow.prompts[0]].filter(Boolean);
+            setInteractiveRun({
+              mode: "sh",
+              prompts: [],
+              answers: [],
+              sourceCode: file.content,
+              shMenuModel: {
+                menuLines,
+                choices,
+                defaultOutput,
+                exitChoice,
+                stage: "choice",
+                caseAnswers: [],
+              },
+            });
+            return;
+          }
           setInteractiveRun({
             mode: "sh",
             prompts: shellFlow.prompts,
