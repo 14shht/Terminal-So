@@ -333,7 +333,11 @@ const evaluateShellInlineAwk = (line: string, env: Record<string, string>): stri
 };
 
 const evaluateShellCondition = (rawCondition: string, env: Record<string, string>): boolean => {
-  const normalized = rawCondition
+  const withArithmetic = rawCondition.replace(/\$\(\((.+?)\)\)/g, (_m, expr: string) =>
+    evaluateShellMath(expr, env),
+  );
+
+  const normalized = withArithmetic
     .replace(/^\[\[?\s*/, "")
     .replace(/\s*\]\]?$/, "")
     .trim()
@@ -365,13 +369,15 @@ const evaluateShellCondition = (rawCondition: string, env: Record<string, string
 
 const applyShellIfElseBranches = (sourceCode: string, env: Record<string, string>): string => {
   let next = sourceCode;
-  const ifElseRegex = /if\s+(?:\[\[?\s*([^\]\n]+)\s*\]\]?|(.+?))\s*;\s*then\s*([\s\S]*?)\s*else\s*([\s\S]*?)\s*fi/g;
+  const ifElseRegex =
+    /if\s+(?:\[\[?\s*([^\]\n]+)\s*\]\]?|(.+?))(?:\s*;\s*|\s*\n+)\s*then\s*([\s\S]*?)\s*else\s*([\s\S]*?)\s*fi/gm;
   next = next.replace(ifElseRegex, (_m, condBracket: string, condInline: string, ifBody: string, elseBody: string) => {
     const cond = (condBracket || condInline || "").trim();
     return evaluateShellCondition(cond, env) ? ifBody : elseBody;
   });
 
-  const ifOnlyRegex = /if\s+(?:\[\[?\s*([^\]\n]+)\s*\]\]?|(.+?))\s*;\s*then\s*([\s\S]*?)\s*fi/g;
+  const ifOnlyRegex =
+    /if\s+(?:\[\[?\s*([^\]\n]+)\s*\]\]?|(.+?))(?:\s*;\s*|\s*\n+)\s*then\s*([\s\S]*?)\s*fi/gm;
   next = next.replace(ifOnlyRegex, (_m, condBracket: string, condInline: string, ifBody: string) => {
     const cond = (condBracket || condInline || "").trim();
     return evaluateShellCondition(cond, env) ? ifBody : "";
