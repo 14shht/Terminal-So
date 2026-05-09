@@ -130,7 +130,7 @@ const parseEchoLines = (content: string): string[] => {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.startsWith("echo "))
-    .map((line) => line.replace(/^echo\s+/, "").trim().replace(/^['\"]|['\"]$/g, ""));
+    .map((line) => line.replace(/^echo\s+(-n\s+)?/, "").trim().replace(/^['\"]|['\"]$/g, ""));
 };
 
 const extractShellEchoText = (line: string): { text: string; noNewLine: boolean } | null => {
@@ -176,11 +176,19 @@ const parseShellInteractiveScript = (content: string): {
       continue;
     }
 
-    const readMatch = line.match(/^read\s+([a-zA-Z_][a-zA-Z0-9_]*)$/);
+    const readMatch = line.match(/^read(?:\s+-[a-zA-Z]+\s*)*\s+(.+)$/);
     if (readMatch) {
       seenRead = true;
-      inputVars.push(readMatch[1]);
-      prompts.push(pendingPrompt || `Input ${inputVars.length}:`);
+      const vars = (readMatch[1] ?? "")
+        .trim()
+        .split(/\s+/)
+        .map((v) => v.trim())
+        .filter((v) => /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(v));
+      const targetVar = vars[0];
+      if (targetVar) {
+        inputVars.push(targetVar);
+      }
+      prompts.push(pendingPrompt || `Input ${inputVars.length || prompts.length + 1}:`);
       pendingPrompt = "";
       continue;
     }
@@ -233,6 +241,15 @@ const renderShellOutputWithInputs = (
       continue;
     }
 
+    const awkMatch = line.match(
+      /^([a-zA-Z_][a-zA-Z0-9_]*)=\$\(\s*awk\s+["']BEGIN\s*\{\s*print\s+(.+)\s*\}["']\s*\)$/,
+    );
+    if (awkMatch) {
+      const awkExpr = (awkMatch[2] ?? "").replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "0");
+      env[awkMatch[1]] = evaluateShellMath(awkExpr, env);
+      continue;
+    }
+
     const assignMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)=(.+)$/);
     if (assignMatch) {
       const rawValue = assignMatch[2].trim().replace(/^['"]|['"]$/g, "");
@@ -254,10 +271,14 @@ const renderShellOutputWithInputs = (
 
   const templateSource = tailOutputTemplates.length > 0 ? tailOutputTemplates : effectiveCode.split("\n");
   return templateSource
-    .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? ""))
-    .map((line) => line.replace(/^echo\s+/, "").trim())
+    .map((line) => evaluateShellInlineAwk(line, env))
+    .map((line) => line.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "0"))
+    .map((line) => line.replace(/^echo\s+(-n\s+)?/, "").trim())
+    .map((line) => line.replace(/^-n\s+/, "").trim())
+    .map((line) => line.replace(/^['"]|['"]$/g, ""))
     .filter((line) => !isShellControlLine(line))
-    .filter((line) => line && !prompts.includes(line));
+    .filter((line) => line && !prompts.includes(line))
+    .filter((line) => !/^Masukkan\s+/i.test(line));
 };
 
 const parsePrintfLines = (content: string): string[] => {
@@ -302,6 +323,13 @@ const evaluateCExpression = (expr: string, env: Record<string, number>): number 
   } catch {
     return 0;
   }
+};
+
+const evaluateShellInlineAwk = (line: string, env: Record<string, string>): string => {
+  return line.replace(/\$\(\s*awk\s+["']BEGIN\s*\{\s*print\s+(.+?)\s*\}["']\s*\)/g, (_m, expr: string) => {
+    const awkExpr = String(expr).replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g, (_, key: string) => env[key] ?? "0");
+    return evaluateShellMath(awkExpr, env);
+  });
 };
 
 const evaluateShellCondition = (rawCondition: string, env: Record<string, string>): boolean => {
@@ -1460,8 +1488,15 @@ function HomeContent() {
 
         const selectedChoice = model.selectedChoice ?? "";
         const selected = model.choices[selectedChoice];
+        const parsedCase = selected ? parseShellInteractiveScript(selected.body) : null;
         const caseOutput = selected
-          ? renderShellOutputWithInputs(selected.body, selected.prompts, [], nextCaseAnswers, selected.outputLines)
+          ? renderShellOutputWithInputs(
+              selected.body,
+              selected.prompts,
+              parsedCase?.inputVars ?? [],
+              nextCaseAnswers,
+              parsedCase?.tailOutputTemplates ?? [],
+            )
           : ["Pilihan tidak tersedia."];
         pushEntry("(program output)", caseOutput.length ? caseOutput : ["(tidak ada output)"], promptAtCommand);
         pushEntry("(stdin)", model.menuLines, promptAtCommand);
