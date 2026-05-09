@@ -286,6 +286,9 @@ const evaluateCExpression = (expr: string, env: Record<string, number>): number 
   if (!/^[0-9+\-*/%().\s<>=!&|]+$/.test(replaced)) return 0;
   try {
     const result = Function(`"use strict"; return (${replaced});`)();
+    if (typeof result === "boolean") {
+      return result ? 1 : 0;
+    }
     return typeof result === "number" && Number.isFinite(result) ? result : 0;
   } catch {
     return 0;
